@@ -1,19 +1,21 @@
-"""閽╁瓙绯荤粺锛堜簨浠剁洃鍚級"""
+"""钩子系统（事件监听）"""
 
 from collections import defaultdict
 from typing import Any, Callable
 
 
 class HookSystem:
-    """浜嬩欢閽╁瓙绯荤粺"""
+    """事件钩子系统"""
 
     def __init__(self):
         self._hooks: dict[str, list[Callable]] = defaultdict(list)
 
     def on(self, event: str, callback: Callable) -> None:
+        """注册事件监听"""
         self._hooks[event].append(callback)
 
     async def emit(self, event: str, **kwargs) -> list[Any]:
+        """触发事件"""
         results = []
         for callback in self._hooks.get(event, []):
             if hasattr(callback, "__await__"):

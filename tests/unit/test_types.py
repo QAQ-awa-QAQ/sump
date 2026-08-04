@@ -1,4 +1,4 @@
-"""绫诲瀷瀹氫箟娴嬭瘯"""
+"""类型定义测试"""
 
 from sump.types import MemoryType, Message, MemoryEntry
 

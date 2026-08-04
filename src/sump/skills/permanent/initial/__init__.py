@@ -1,1 +1,1 @@
-# sump.skills.permanent.initial\n
+# sump.skills.permanent.initial

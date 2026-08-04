@@ -1,15 +1,20 @@
-"""瀹″垽瀹橈紙缁煎悎璇勫垎瑁佸喅锛?""
+"""审判官（综合评分裁决）"""
 
 
 class Judge:
-    """缁煎悎瀹夊叏瑁佸喅"""
+    """综合安全裁决"""
 
     def __init__(self, threshold: float = 0.5):
         self.threshold = threshold
 
     def decide(self, interceptor_result: bool, scanner_result: dict) -> dict:
+        """综合裁决
+
+        Returns:
+            {"allow": bool, "reason": str}
+        """
         if not interceptor_result:
-            return {"allow": False, "reason": "blocked by interceptor"}
+            return {"allow": False, "reason": "被拦截器阻止"}
         if scanner_result.get("score", 1.0) < self.threshold:
-            return {"allow": False, "reason": "below safety threshold"}
-        return {"allow": True, "reason": "passed"}
+            return {"allow": False, "reason": "低于安全阈值"}
+        return {"allow": True, "reason": "通过"}

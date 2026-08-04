@@ -1,1 +1,27 @@
-"""Tool 抽象基类"""\n\nfrom abc import ABC, abstractmethod\nfrom typing import Any\n\n\nclass Tool(ABC):\n    """所有工具的抽象基类"""\n\n    name: str = ""\n    description: str = ""\n    parameters: dict = {}\n\n    @abstractmethod\n    async def execute(self, **kwargs) -> Any:\n        """执行工具"""\n\n    def to_openai_schema(self) -> dict:\n        """转换为 OpenAI function-calling 格式"""\n        return {\n            "type": "function",\n            "function": {\n                "name": self.name,\n                "description": self.description,\n                "parameters": self.parameters,\n            },\n        }\n
+"""Tool 抽象基类"""
+
+from abc import ABC, abstractmethod
+from typing import Any
+
+
+class Tool(ABC):
+    """所有工具的抽象基类"""
+
+    name: str = ""
+    description: str = ""
+    parameters: dict = {}
+
+    @abstractmethod
+    async def execute(self, **kwargs) -> Any:
+        """执行工具"""
+
+    def to_openai_schema(self) -> dict:
+        """转换为 OpenAI function-calling 格式"""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }

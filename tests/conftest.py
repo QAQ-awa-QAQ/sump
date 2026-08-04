@@ -1,4 +1,4 @@
-"""pytest 閰嶇疆 + fixture"""
+"""pytest 配置与 fixture"""
 
 import pytest
 

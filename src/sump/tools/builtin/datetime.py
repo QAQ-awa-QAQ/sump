@@ -1,4 +1,4 @@
-"""鏃堕棿宸ュ叿"""
+"""时间工具"""
 
 from datetime import datetime, timezone
 
@@ -8,7 +8,7 @@ from typing import Any
 
 class DateTimeTool(Tool):
     name = "datetime"
-    description = "Get current date and time"
+    description = "获取当前日期和时间"
     parameters = {
         "type": "object",
         "properties": {},

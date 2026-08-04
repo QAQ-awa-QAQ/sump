@@ -1,1 +1,1 @@
-# sump.skills\n
+# sump.skills

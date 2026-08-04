@@ -1,13 +1,15 @@
-"""鍏抽敭杈撳嚭鏍煎紡鍖?""
+"""关键输出格式化"""
 
 
 class KeyOutput:
-    """鏍煎紡鍖栧叧閿緭鍑轰俊鎭?""
+    """格式化关键输出信息"""
 
     @staticmethod
     def format(action: str, detail: str, data: dict | None = None) -> str:
+        """格式化关键输出"""
         lines = [f"[{action}] {detail}"]
         if data:
             for k, v in data.items():
                 lines.append(f"  {k}: {v}")
-        return "\n".join(lines)
+        return "
+".join(lines)

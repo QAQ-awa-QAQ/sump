@@ -1,16 +1,17 @@
-"""Shell 鍛戒护宸ュ叿"""
+"""Shell 命令工具"""
+
+from typing import Any
 
 from sump.tools.base import Tool
-from typing import Any
 
 
 class ShellTool(Tool):
     name = "shell"
-    description = "Execute shell commands"
+    description = "执行 Shell 命令"
     parameters = {
         "type": "object",
         "properties": {
-            "command": {"type": "string", "description": "Shell command to execute"},
+            "command": {"type": "string", "description": "要执行的命令"},
         },
         "required": ["command"],
     }

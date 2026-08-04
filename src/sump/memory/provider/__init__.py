@@ -1,1 +1,1 @@
-# sump.memory.provider\n
+# sump.memory.provider

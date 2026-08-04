@@ -1,8 +1,13 @@
-"""鏁翠綋瑁佸喅"""
+"""整体裁决"""
 
 
 class Arbiter:
-    """缁煎悎鍐呭閮ㄨ瘎浼扮粨鏋滃仛鏈€缁堣鍐?""
+    """综合内外部评估结果做最终裁决"""
 
     async def arbitrate(self, internal: dict, external: dict | None = None) -> dict:
-        return {"proceed": True, "action": "continue", "reason": "all checks passed"}
+        """综合裁决
+
+        Returns:
+            {"proceed": bool, "action": str, "reason": str}
+        """
+        return {"proceed": True, "action": "继续", "reason": "所有检查通过"}

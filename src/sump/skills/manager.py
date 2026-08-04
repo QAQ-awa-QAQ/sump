@@ -1,1 +1,26 @@
-"""技能管理器（注册/发现/加载）"""\n\nfrom sump.skills.base import Skill\n\n\nclass SkillManager:\n    """技能注册与发现"""\n\n    def __init__(self):\n        self._skills: dict[str, Skill] = {}\n\n    def register(self, skill: Skill) -> None:\n        self._skills[skill.name] = skill\n\n    def get(self, name: str) -> Skill | None:\n        return self._skills.get(name)\n\n    def list_all(self) -> list[Skill]:\n        return list(self._skills.values())\n\n    def unregister(self, name: str) -> None:\n        self._skills.pop(name, None)\n
+"""技能管理器（注册/发现/加载）"""
+
+from sump.skills.base import Skill
+
+
+class SkillManager:
+    """技能注册与发现"""
+
+    def __init__(self):
+        self._skills: dict[str, Skill] = {}
+
+    def register(self, skill: Skill) -> None:
+        """注册技能"""
+        self._skills[skill.name] = skill
+
+    def get(self, name: str) -> Skill | None:
+        """获取技能"""
+        return self._skills.get(name)
+
+    def list_all(self) -> list[Skill]:
+        """列出所有技能"""
+        return list(self._skills.values())
+
+    def unregister(self, name: str) -> None:
+        """移除技能"""
+        self._skills.pop(name, None)

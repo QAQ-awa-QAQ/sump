@@ -1,4 +1,4 @@
-"""鐢熸垚璐＄尞鑰呭垪琛?""
+"""生成贡献者列表"""
 
 import subprocess
 
@@ -9,13 +9,15 @@ def main():
             ["git", "log", "--format=%aN <%aE>", "--", "."],
             capture_output=True, text=True,
         )
-        contributors = sorted(set(result.stdout.strip().split("\n")))
-        print("# Contributors\n")
+        contributors = sorted(set(result.stdout.strip().split("
+")))
+        print("# 贡献者
+")
         for c in contributors:
             if c:
                 print(f"- {c}")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"错误: {e}")
 
 
 if __name__ == "__main__":

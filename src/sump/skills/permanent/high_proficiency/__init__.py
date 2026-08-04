@@ -1,1 +1,1 @@
-# sump.skills.permanent.high_proficiency\n
+# sump.skills.permanent.high_proficiency

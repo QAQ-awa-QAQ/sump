@@ -1,4 +1,4 @@
-"""鏂囦欢璇诲啓宸ュ叿"""
+"""文件读写工具"""
 
 from sump.tools.base import Tool
 from typing import Any
@@ -6,13 +6,13 @@ from typing import Any
 
 class FileTool(Tool):
     name = "file"
-    description = "Read and write files"
+    description = "读取和写入文件"
     parameters = {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["read", "write"]},
-            "path": {"type": "string", "description": "File path"},
-            "content": {"type": "string", "description": "Content to write"},
+            "path": {"type": "string", "description": "文件路径"},
+            "content": {"type": "string", "description": "要写入的内容"},
         },
         "required": ["action", "path"],
     }

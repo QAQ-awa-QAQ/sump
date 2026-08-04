@@ -1,1 +1,16 @@
-"""短期→浅层压缩器"""\n\nfrom sump.memory.working import WorkingMemory\nfrom sump.memory.shallow import ShallowMemory\n\n\nclass MemoryCompressor:\n    """将短期记忆压缩到浅层长期记忆"""\n\n    def __init__(self, working: WorkingMemory, shallow: ShallowMemory):\n        self.working = working\n        self.shallow = shallow\n\n    async def compress(self) -> None:\n        """执行压缩"""\n        pass\n
+"""短期到浅层压缩器"""
+
+from sump.memory.working import WorkingMemory
+from sump.memory.shallow import ShallowMemory
+
+
+class MemoryCompressor:
+    """将短期记忆压缩到浅层长期记忆"""
+
+    def __init__(self, working: WorkingMemory, shallow: ShallowMemory):
+        self.working = working
+        self.shallow = shallow
+
+    async def compress(self) -> None:
+        """执行压缩"""
+        pass

@@ -1,1 +1,1 @@
-# sump.skills.temporary\n
+# sump.skills.temporary

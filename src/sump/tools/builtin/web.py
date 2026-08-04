@@ -1,16 +1,17 @@
-"""HTTP 璇锋眰宸ュ叿"""
+"""HTTP 请求工具"""
+
+from typing import Any
 
 from sump.tools.base import Tool
-from typing import Any
 
 
 class WebTool(Tool):
     name = "web"
-    description = "Make HTTP requests"
+    description = "发送 HTTP 请求"
     parameters = {
         "type": "object",
         "properties": {
-            "url": {"type": "string", "description": "URL to fetch"},
+            "url": {"type": "string", "description": "目标 URL"},
             "method": {"type": "string", "enum": ["GET", "POST"]},
         },
         "required": ["url"],

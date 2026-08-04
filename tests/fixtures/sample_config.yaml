@@ -1,4 +1,4 @@
-﻿agent:
+agent:
   name: test-agent
   model: gpt-4o
   max_rounds: 10
