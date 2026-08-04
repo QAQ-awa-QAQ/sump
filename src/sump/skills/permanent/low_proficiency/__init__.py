@@ -1,0 +1,1 @@
+# sump.skills.permanent.low_proficiency\n

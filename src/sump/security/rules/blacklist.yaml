@@ -1,0 +1,5 @@
+# 黑名单规则
+patterns:
+  - "malware"
+  - "exploit"
+keywords: []

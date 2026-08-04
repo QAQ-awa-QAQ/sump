@@ -1,0 +1,9 @@
+# 生产环境覆盖
+debug:
+  log_level: "WARNING"
+  trace_enabled: false
+
+security:
+  interceptor: {enabled: true}
+  scanner: {enabled: true}
+  judge: {enabled: true, threshold: 0.3}

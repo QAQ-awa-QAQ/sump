@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sump"
+version = "0.1.0"
+description = "Smart Unified Memory & Platform - Agent runtime framework"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+authors = [
+    {name = "XR", email = "2271917353@qq.com"}
+]
+keywords = ["agent", "memory", "llm", "ai"]
+
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "httpx>=0.24",
+    "openai>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pre-commit>=3.0",
+    "ruff>=0.1",
+]
+mem0 = ["mem0ai>=0.1"]
+zep = ["zep-python>=1.0"]
+all = ["sump[dev,mem0,zep]"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

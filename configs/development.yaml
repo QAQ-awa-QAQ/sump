@@ -1,0 +1,7 @@
+# 开发环境覆盖
+debug:
+  log_level: "DEBUG"
+  trace_enabled: true
+
+agent:
+  max_rounds: 20
