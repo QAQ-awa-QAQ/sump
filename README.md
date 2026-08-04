@@ -6,7 +6,7 @@ SUMP（Smart Unified Memory & Platform）是一个面向 Agent 的轻量级运�
 
 ## 架构设计
 
-docs/SUMP_architecture.md
+[docs/SUMP_architecture.md](docs/SUMP_architecture.md)
 
 ## 当前进展
 
