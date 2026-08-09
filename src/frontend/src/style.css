@@ -130,6 +130,12 @@ body {
 }
 
 .session-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.session-item .count {
+  font-size: 11px;
+  color: var(--color-muted-light);
+  margin: 0 6px;
+  flex-shrink: 0;
+}
 .session-item .delete-btn {
   opacity: 0;
   background: none;
@@ -496,6 +502,14 @@ body {
 .tool-call-msg code { font-weight: 600; color: var(--color-accent); }
 .tool-call-msg .tool-args { color: var(--color-muted-light); font-size: 11px; }
 
+.security-pending {
+  font-size: 12px;
+  color: var(--color-muted);
+  padding: 4px 0;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.security-pending code { font-weight: 600; color: var(--color-accent); }
+
 /* Tool result message */
 .tool-result-msg {
   font-size: 12px;
@@ -509,7 +523,137 @@ body {
   font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
   max-height: 200px;
   overflow-y: auto;
+  word-break: break-all;
 }
+
+/* ---- Security Toast ---- */
+.security-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--color-surface);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 8px 16px;
+  font-size: 13px;
+  box-shadow: var(--shadow-lg);
+  z-index: 200;
+  opacity: 0;
+  transition: all 200ms ease;
+  pointer-events: none;
+}
+.security-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.security-toast code { font-weight: 600; color: var(--color-accent); }
+
+/* ---- Security Overlay ---- */
+.security-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.3);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+.security-overlay.show { opacity: 1; }
+
+.security-dialog {
+  background: var(--color-background);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  max-width: 440px;
+  width: 90%;
+  overflow: hidden;
+}
+
+.sd-header {
+  font-size: 15px;
+  font-weight: 600;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-destructive);
+}
+
+.sd-body { padding: 14px 18px; }
+
+.sd-row {
+  font-size: 13px;
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+.sd-row:last-child { margin-bottom: 0; }
+.sd-row label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-muted-light);
+  margin-bottom: 3px;
+}
+.sd-summary-text {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.sd-row code {
+  display: block;
+  background: var(--color-surface);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+}
+
+.sd-danger {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.sd-danger.low { background: #EEF2FF; color: #4F46E5; }
+.sd-danger.medium { background: #FEF3C7; color: #D97706; }
+.sd-danger.high { background: #FEE2E2; color: #DC2626; }
+.sd-danger.critical { background: #DC2626; color: #FFFFFF; }
+
+.sd-concern {
+  display: inline-block;
+  background: #FEE2E2;
+  color: #DC2626;
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  margin: 2px;
+}
+
+.sd-actions {
+  display: flex;
+  gap: 8px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--color-border);
+}
+
+.sd-btn {
+  flex: 1;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  border: none;
+  transition: all 150ms ease;
+}
+.sd-reject { background: var(--color-surface); color: var(--color-foreground); border: 1px solid var(--color-border); }
+.sd-reject:hover { background: var(--color-border); }
+.sd-approve { background: var(--color-accent); color: #FFF; }
+.sd-approve:hover { background: var(--color-accent-hover); }
 
 .thinking-content {
   max-height: 0;

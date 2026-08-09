@@ -35,10 +35,12 @@ class Context:
     def history(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for m in self.messages[-50:]:
-            entry: dict[str, Any] = {"role": m.role, "content": m.content}
-            if m.tool_call_id:
-                entry["tool_call_id"] = m.tool_call_id
+            entry: dict[str, Any] = {"role": m.role}
             if m.tool_calls:
                 entry["tool_calls"] = m.tool_calls
+            else:
+                entry["content"] = m.content
+            if m.tool_call_id:
+                entry["tool_call_id"] = m.tool_call_id
             result.append(entry)
         return result

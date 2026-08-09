@@ -1,22 +1,19 @@
 """SUMP API 路由 —— REST + SSE 流式"""
 
 import json
-import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from api.session_manager import SessionManager
 from sump.agent import Agent
 from sump.config import Config
 
 router = APIRouter(prefix="/api")
-manager = SessionManager()
 config = Config()
 
-# ---- 全局 Agent（共享工具注册） ----
+# ---- 全局 Agent ----
 _agent: Agent | None = None
 
 
@@ -43,59 +40,52 @@ class UpdateSettingsRequest(BaseModel):
     reasoning_effort: str | None = None
     thinking_enabled: bool | None = None
 
-# ---- 会话管理 ----
+# ---- 会话管理（统一走 Agent 持久化） ----
 
 @router.post("/sessions")
 async def create_session(body: CreateSessionRequest):
-    session = manager.create(body.name)
-    return session.to_dict()
+    agent = _get_agent()
+    sid = agent.new_session()
+    return {"id": sid}
 
 
 @router.get("/sessions")
 async def list_sessions():
-    return [s.to_dict() for s in manager.list_all()]
+    agent = _get_agent()
+    return agent.memory.list_sessions()
 
 
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: str):
-    session = manager.get(session_id)
-    if not session:
-        raise HTTPException(404, "会话不存在")
-    return session.to_dict()
+    agent = _get_agent()
+    msgs = agent.memory.load_messages(session_id)
+    return {"id": session_id, "messages": msgs}
+
+
+@router.post("/sessions/{session_id}/activate")
+async def activate_session(session_id: str):
+    agent = _get_agent()
+    msgs = agent.memory.load_messages(session_id)
+    agent.switch_session(session_id)
+    return {"id": session_id, "message_count": len(msgs)}
 
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
-    if not manager.delete(session_id):
+    agent = _get_agent()
+    if not agent.memory.delete_session(session_id):
         raise HTTPException(404, "会话不存在")
+    if agent.session_id == session_id:
+        agent.switch_session("default")
     return {"ok": True}
-
-
-@router.put("/sessions/{session_id}/settings")
-async def update_settings(session_id: str, body: UpdateSettingsRequest):
-    settings = {k: v for k, v in body.model_dump().items() if v is not None}
-    session = manager.update_settings(session_id, settings)
-    if not session:
-        raise HTTPException(404, "会话不存在")
-    return session.to_dict()
 
 
 # ---- 对话（流式 SSE） ----
 
 @router.post("/chat/{session_id}")
 async def chat(session_id: str, body: ChatRequest):
-    session = manager.get(session_id)
-    if not session:
-        raise HTTPException(404, "会话不存在")
-
-    session.settings.update({
-        "model": body.model,
-        "reasoning_effort": body.reasoning_effort,
-        "thinking_enabled": body.thinking_enabled,
-    })
-
     agent = _get_agent()
-    # 同步 Agent 会话到前端会话
+    # 确保 Agent 在正确的会话上
     if agent.session_id != session_id:
         agent.switch_session(session_id)
     agent.llm._backend._model = body.model
@@ -104,9 +94,17 @@ async def chat(session_id: str, body: ChatRequest):
 
     async def event_stream():
         try:
-            async for event in agent.run_stream(body.message):
-                data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-                yield f"data: {data}\n\n"
+            if body.message == "__continue__":
+                # 审批后自动延续——不添加用户消息，直接让 LLM 继续
+                agent._is_continue = True
+                yield "data: {\"type\":\"continue\",\"text\":\"审批完成，继续对话\"}\n\n"
+                async for event in agent._run_core():
+                    data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+                    yield f"data: {data}\n\n"
+            else:
+                async for event in agent.run_stream(body.message):
+                    data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+                    yield f"data: {data}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
             err = json.dumps({"type": "error", "text": str(e)}, ensure_ascii=False, separators=(",", ":"))
@@ -133,46 +131,15 @@ async def list_models():
     ]
 
 
-# ---- 记忆管理（委托 Agent 统一会话） ----
+# ---- 安全审批 ----
 
-memory_router = APIRouter(prefix="/api/memory")
+class ApproveRequest(BaseModel):
+    call_id: str
+    approved: bool
 
 
-@memory_router.post("/sessions")
-async def create_memory_session():
+@router.post("/tools/approve")
+async def approve_tool(body: ApproveRequest):
     agent = _get_agent()
-    sid = agent.new_session()
-    return {"id": sid}
-
-
-@memory_router.get("/sessions")
-async def list_memory_sessions():
-    agent = _get_agent()
-    return agent.memory.list_sessions()
-
-
-@memory_router.get("/sessions/{session_id}")
-async def get_memory_session(session_id: str):
-    agent = _get_agent()
-    return agent.memory.load_messages(session_id)
-
-
-@memory_router.post("/sessions/{session_id}/activate")
-async def activate_memory_session(session_id: str):
-    agent = _get_agent()
-    msgs = agent.memory.load_messages(session_id)
-    if not msgs:
-        raise HTTPException(404, "会话不存在")
-    agent.switch_session(session_id)
-    return {"id": session_id, "message_count": len(msgs)}
-
-
-@memory_router.delete("/sessions/{session_id}")
-async def delete_memory_session(session_id: str):
-    agent = _get_agent()
-    if not agent.memory.delete_session(session_id):
-        raise HTTPException(404, "会话不存在")
-    # 如果删的是当前会话，切回 default
-    if agent.session_id == session_id:
-        agent.switch_session("default")
-    return {"ok": True}
+    result = await agent.approve_command(body.call_id, body.approved)
+    return {"result": result[:500], "continue": True}

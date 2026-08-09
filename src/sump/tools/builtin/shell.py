@@ -10,7 +10,9 @@ from sump.tools.base import Tool
 class ShellTool(Tool):
     name = "shell"
     description = (
-        "在终端执行一条命令并返回输出。"
+        "在 Windows 终端执行一条命令并返回输出。"
+        "当前系统是 Windows，只能用 cmd/PowerShell 命令（如 dir、type、findstr），"
+        "不能使用 Linux 命令（ls、cat、grep 等不可用）。"
         "适用场景：查看文件列表、读取文件内容、运行脚本等。"
         "注意：命令有 30 秒超时限制。"
     )

@@ -26,6 +26,9 @@ deepseek:
   max_tokens: 4096
   temperature: 1.0                      # 仅在 thinking_enabled=false 时生效
 
+security:
+  notify_safe: true                    # true=安全命令也推送通知事件给前端
+
 tools:
   builtin:
     file: {enabled: true}

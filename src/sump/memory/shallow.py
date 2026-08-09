@@ -2,8 +2,6 @@
 
 import json
 import sqlite3
-import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +19,6 @@ class ShallowMemory:
     def __init__(self, db_path: str = "data/memory.db") -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
         self._init_db()
 
     # ------------------------------------------------------------------
@@ -38,35 +35,32 @@ class ShallowMemory:
         tool_calls: list[dict] | None = None,
     ) -> None:
         """保存一条消息。"""
-        with self._lock:
-            db = self._conn()
-            try:
-                db.execute(
-                    "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (
-                        session_id,
-                        role,
-                        content,
-                        tool_call_id,
-                        json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None,
-                    ),
-                )
-                db.commit()
-            finally:
-                db.close()
+        db = self._conn()
+        try:
+            db.execute(
+                "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, role, content, tool_call_id,
+                 json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None),
+            )
+            db.commit()
+        finally:
+            db.close()
 
     def load_messages(
         self, session_id: str = "default", limit: int = 50
     ) -> list[dict[str, Any]]:
         """加载指定会话的最近 N 条消息。"""
-        with self._lock, self._conn() as db:
+        db = self._conn()
+        try:
             rows = db.execute(
                 "SELECT role, content, tool_call_id, tool_calls "
                 "FROM messages WHERE session_id = ? "
                 "ORDER BY id ASC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
+        finally:
+            db.close()
 
         result: list[dict[str, Any]] = []
         for role, content, tci, tcs in rows:
@@ -80,11 +74,14 @@ class ShallowMemory:
 
     def list_sessions(self) -> list[dict[str, Any]]:
         """列出所有会话。"""
-        with self._lock, self._conn() as db:
+        db = self._conn()
+        try:
             rows = db.execute(
                 "SELECT session_id, MIN(created_at) AS first, COUNT(*) AS cnt "
                 "FROM messages GROUP BY session_id ORDER BY first DESC"
             ).fetchall()
+        finally:
+            db.close()
         return [
             {"id": sid, "msg_count": cnt, "created_at": first}
             for sid, first, cnt in rows
@@ -92,9 +89,13 @@ class ShallowMemory:
 
     def delete_session(self, session_id: str) -> bool:
         """删除一个会话的全部消息。"""
-        with self._lock, self._conn() as db:
+        db = self._conn()
+        try:
             cur = db.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            db.commit()
             return cur.rowcount > 0
+        finally:
+            db.close()
 
     # ------------------------------------------------------------------
     # 内部
@@ -107,7 +108,8 @@ class ShallowMemory:
         return db
 
     def _init_db(self) -> None:
-        with self._lock, self._conn() as db:
+        db = self._conn()
+        try:
             db.execute(
                 """CREATE TABLE IF NOT EXISTS messages (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,3 +125,6 @@ class ShallowMemory:
                 "CREATE INDEX IF NOT EXISTS idx_session "
                 "ON messages(session_id, id)"
             )
+            db.commit()
+        finally:
+            db.close()

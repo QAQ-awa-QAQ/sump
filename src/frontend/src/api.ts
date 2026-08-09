@@ -6,10 +6,13 @@ const BASE = "/api";
 
 export interface Session {
   id: string;
-  name: string;
+  msg_count: number;
   created_at: string;
-  message_count: number;
-  settings: SessionSettings;
+}
+
+export interface SessionDetail {
+  id: string;
+  messages: { role: string; content: string; tool_calls?: any[]; tool_call_id?: string }[];
 }
 
 export interface SessionSettings {
@@ -44,22 +47,17 @@ export async function listSessions(): Promise<Session[]> {
   return res.json();
 }
 
-export async function getSession(id: string): Promise<Session> {
+export async function getSessionDetail(id: string): Promise<SessionDetail> {
   const res = await fetch(`${BASE}/sessions/${id}`);
   return res.json();
 }
 
-export async function deleteSession(id: string): Promise<void> {
-  await fetch(`${BASE}/sessions/${id}`, { method: "DELETE" });
+export async function activateSession(id: string): Promise<void> {
+  await fetch(`${BASE}/sessions/${id}/activate`, { method: "POST" });
 }
 
-export async function updateSessionSettings(id: string, settings: Partial<SessionSettings>): Promise<Session> {
-  const res = await fetch(`${BASE}/sessions/${id}/settings`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(settings),
-  });
-  return res.json();
+export async function deleteSession(id: string): Promise<void> {
+  await fetch(`${BASE}/sessions/${id}`, { method: "DELETE" });
 }
 
 // ---- Models ----
@@ -74,6 +72,9 @@ export async function listModels(): Promise<Model[]> {
 export type StreamChunk =
   | { type: "tool_call"; name: string; args: Record<string, string> }
   | { type: "tool_result"; content: string }
+  | { type: "security_check"; verdict: string; call_id: string; command: string; summary: string; danger: string; concerns: string[]; analysis_source: string }
+  | { type: "security_check_detail"; verdict: string; call_id: string; command: string; summary: string; danger: string; concerns: string[]; analysis_source: string }
+  | { type: "continue"; text: string }
   | { type: "reasoning"; text: string }
   | { type: "content"; text: string }
   | { type: "error"; text: string }
@@ -137,33 +138,13 @@ export function streamChat(
   return controller;
 }
 
-// ---- Memory Sessions ----
+// ---- Tool Approval ----
 
-export interface MemorySession {
-  id: string;
-  msg_count: number;
-  created_at: string;
-}
-
-export async function createMemorySession(): Promise<MemorySession> {
-  const res = await fetch(`${BASE}/memory/sessions`, { method: "POST" });
+export async function approveTool(callId: string, approved: boolean): Promise<{ result: string; continue?: boolean }> {
+  const res = await fetch(`${BASE}/tools/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ call_id: callId, approved }),
+  });
   return res.json();
-}
-
-export async function listMemorySessions(): Promise<MemorySession[]> {
-  const res = await fetch(`${BASE}/memory/sessions`);
-  return res.json();
-}
-
-export async function getMemorySession(id: string): Promise<{ role: string; content: string }[]> {
-  const res = await fetch(`${BASE}/memory/sessions/${id}`);
-  return res.json();
-}
-
-export async function activateMemorySession(id: string): Promise<void> {
-  await fetch(`${BASE}/memory/sessions/${id}/activate`, { method: "POST" });
-}
-
-export async function deleteMemorySession(id: string): Promise<void> {
-  await fetch(`${BASE}/memory/sessions/${id}`, { method: "DELETE" });
 }

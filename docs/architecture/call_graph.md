@@ -1,6 +1,6 @@
 # SUMP 函数调用关系图
 
-> 版本: v0.1.4 | 更新: 2026-08-09
+> 版本: v0.1.5 | 更新: 2026-08-10
 
 ---
 
@@ -13,16 +13,26 @@
 Agent.run_stream(user_input)         ← 唯一入口（CLI/API 共用）
   └─ Context.add_user_message()      ← 记录用户消息（自动持久化）
   └─ Agent._run_core()               ← 核心循环
-       └─ for _ in range(10):        ← 工具调用循环
+       └─ for _ in range(10):        ← 工具调用循环（round 0 始终带 tools）
             ├─ LLMClient.chat_full(history, tools=schemas)
             │    └─ DeepSeekClient.chat() → DeepSeek API
             ├─ if tool_calls:
-            │    ├─ yield {"type":"tool_call", ...}     → CLI 打印 / SSE 推送
-            │    ├─ 执行工具 → Context.add_tool_message()
-            │    └─ yield {"type":"tool_result", ...}   → CLI 打印 / SSE 推送
+            │    ├─ yield {"type":"tool_call", ...}
+            │    ├─ Judge.analyze()           ← 规则匹配（秒出）
+            │    ├─ Judge.analyze_llm()       ← LLM Flash 分析
+            │    ├─ yield {"type":"security_check", ...}  ← 推送审批事件
+            │    ├─ Interceptor.check()       ← 终裁
+            │    ├─ if CLI: 同步审批 → 执行/拒绝
+            │    └─ if API: 挂起 → yield → 等 /api/tools/approve
+            │         └─ Agent.approve_command() → 执行 → 替换⛔待确认
             └─ else:
                  └─ LLMClient.chat_stream(history)
                       └─ yield {"type":"reasoning"|"content", ...}  → 流式输出
+
+__continue__ 流程（审批后自动延续）:
+  POST /api/chat/{id} {"message":"__continue__"}
+    └─ Agent._is_continue=True → Agent._run_core()
+         └─ 工具调用循环（同上），LLM 可链式调工具
 
 CLI (examples/basic_chat.py):  消费事件 → ANSI 终端渲染
 API (src/api/routes.py):       消费事件 → SSE 序列化
@@ -90,8 +100,11 @@ Vite + TypeScript SPA (src/frontend/)
 |------|----------|
 | `tool_call` | ⚙ 调用工具 `name` {args} |
 | `tool_result` | 等宽终端风格结果框 |
+| `security_check` | 安全审查指示 / 审批弹窗（safe=🟢 命令确认, risky=🔴 危险确认） |
+| `security_check_detail` | LLM Flash 详细分析更新弹窗内容 |
 | `reasoning` | 深度思考指示条（脉冲动画） |
 | `content` | Markdown 渲染 + 语法高亮 |
+| `continue` | 审批完成继续对话指示 |
 | `error` | 红色错误提示 |
 | `[DONE]` | 流结束 |
 
@@ -103,7 +116,8 @@ Vite + TypeScript SPA (src/frontend/)
 |------|------|----------|
 | `__init__(config?)` | Config → Context → LLMClient → ToolRegistry → ShallowMemory → `_load_session()` | 外部实例化 |
 | `run_stream(user_input)` | `ctx.add_user_message()` → `_run_core()` → yield event | CLI / API |
-| `_run_core()` | `chat_full()` → 工具执行 → `chat_stream()` → yield event | run_stream |
+| `_run_core()` | `chat_full()` → Judge.analyze() → Judge.analyze_llm() → Interceptor.check() → 工具执行/挂起 → `chat_stream()` → yield event | run_stream, __continue__ |
+| `approve_command(id, approved)` | `_pending_approvals` → 执行/拒绝 → 替换⛔待确认 | API tools/approve |
 | `switch_session(id)` | `ctx.messages.clear()` → `_load_session()` | API memory 路由 |
 | `new_session()` | `uuid4().hex` → `switch_session()` | API memory 路由 |
 
@@ -228,9 +242,13 @@ Vite + TypeScript SPA (src/frontend/)
 
 | 类 | 状态 | 说明 |
 |----|------|------|
-| `Interceptor` | ⚠️ 桩 | `check()` 恒返回 True |
-| `Judge` | ⚠️ 桩 | 未实现 |
+| `Judge` | ✅ | 规则匹配 + LLM Flash 双重分析，产出 Verdict |
+| `Interceptor` | ✅ | 依据 Verdict 终裁，产出 SecurityEvent 推送前端 |
 | `Scanner` | ⚠️ 桩 | 未实现 |
+| `rules/blacklist.yaml` | ✅ | 高危命令黑名单（rm/del/format/shutdown 等） |
+| `rules/whitelist.yaml` | ✅ | 安全命令白名单（dir/ls/echo/type 等） |
+
+> 审批流：Judge.analyze()（规则秒出）→ Judge.analyze_llm()（LLM Flash）→ Interceptor.check() 终裁 → SecurityEvent 推送前端 → 用户审批 → approve_command 执行/拒绝。API 模式下 safe/risky 统一走挂起审批，消除竞态。
 
 ---
 

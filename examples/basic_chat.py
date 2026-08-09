@@ -12,6 +12,20 @@ YELLOW = "\033[33m"
 
 async def main():
     agent = Agent()
+
+    def security_prompt(command: str, summary: str, danger: str) -> bool:
+        """CLI 安全审批回调。"""
+        print(f"\n🛡️ {summary} | 危险: {danger}")
+        print(f"   命令: {command}")
+        while True:
+            choice = input("   是否放行? [y/N]: ").strip().lower()
+            if choice in ("y", "yes"):
+                return True
+            if choice in ("", "n", "no"):
+                return False
+
+    agent.on_security_check = security_prompt
+
     print("SUMP Agent 已启动（输入 exit 退出）\n")
 
     while True:
