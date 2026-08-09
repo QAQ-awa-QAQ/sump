@@ -23,6 +23,7 @@ Thumbs.db
 # Project
 data/memory.db
 data/logs/
+node_modules/
 
 # UV
 uv.lock
