@@ -13,18 +13,18 @@ class LLMClient:
     def __init__(self, config: Config) -> None:
         self._backend = DeepSeekClient(config)
 
-    async def chat(self, messages: list[dict[str, str]]) -> str:
+    async def chat(self, messages: list[dict[str, Any]]) -> str:
         """发送对话请求，返回文本回复。"""
         return await self._backend.chat_text(messages)
 
     async def chat_full(
-        self, messages: list[dict[str, str]], *, tools: list[dict[str, Any]] | None = None
+        self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None = None
     ) -> dict[str, Any]:
         """发送对话请求，返回完整响应（含 reasoning_content、tool_calls、usage）。"""
         return await self._backend.chat(messages, tools=tools)
 
     def chat_stream(
-        self, messages: list[dict[str, str]]
-    ) -> AsyncGenerator[dict[str, str], None]:
+        self, messages: list[dict[str, Any]]
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """流式对话，逐 token 产出 {"type": "reasoning"|"content", "text": ...}。"""
         return self._backend.chat_stream(messages)

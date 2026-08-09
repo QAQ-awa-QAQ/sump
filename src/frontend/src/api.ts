@@ -72,6 +72,8 @@ export async function listModels(): Promise<Model[]> {
 // ---- Streaming Chat ----
 
 export type StreamChunk =
+  | { type: "tool_call"; name: string; args: Record<string, string> }
+  | { type: "tool_result"; content: string }
   | { type: "reasoning"; text: string }
   | { type: "content"; text: string }
   | { type: "error"; text: string }
@@ -133,4 +135,35 @@ export function streamChat(
   })();
 
   return controller;
+}
+
+// ---- Memory Sessions ----
+
+export interface MemorySession {
+  id: string;
+  msg_count: number;
+  created_at: string;
+}
+
+export async function createMemorySession(): Promise<MemorySession> {
+  const res = await fetch(`${BASE}/memory/sessions`, { method: "POST" });
+  return res.json();
+}
+
+export async function listMemorySessions(): Promise<MemorySession[]> {
+  const res = await fetch(`${BASE}/memory/sessions`);
+  return res.json();
+}
+
+export async function getMemorySession(id: string): Promise<{ role: string; content: string }[]> {
+  const res = await fetch(`${BASE}/memory/sessions/${id}`);
+  return res.json();
+}
+
+export async function activateMemorySession(id: string): Promise<void> {
+  await fetch(`${BASE}/memory/sessions/${id}/activate`, { method: "POST" });
+}
+
+export async function deleteMemorySession(id: string): Promise<void> {
+  await fetch(`${BASE}/memory/sessions/${id}`, { method: "DELETE" });
 }

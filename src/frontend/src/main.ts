@@ -2,6 +2,28 @@
    SUMP Studio — Main Entry
    ============================================================ */
 
+import { marked } from "marked";
+import { markedHighlight } from "marked-highlight";
+import hljs from "highlight.js";
+import "highlight.js/styles/github.css";
+
+// 配置 marked + highlight.js
+marked.use(
+  markedHighlight({
+    langPrefix: "hljs language-",
+    highlight(code: string, lang: string) {
+      if (lang && hljs.getLanguage(lang)) {
+        return hljs.highlight(code, { language: lang }).value;
+      }
+      return hljs.highlightAuto(code).value;
+    },
+  }),
+);
+
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+});
 import {
   type Session,
   type SessionSettings,
@@ -38,7 +60,7 @@ const $csEffort = document.getElementById("custom-select-effort")!;
 
 function getSettings(): SessionSettings {
   return {
-    model: $csModel.querySelector(".cs-trigger")!.getAttribute("data-value") || "deepseek-v4-pro",
+    model: $csModel.querySelector(".cs-trigger")!.getAttribute("data-value") || "deepseek-v4-flash",
     reasoning_effort: $csEffort.querySelector(".cs-trigger")!.getAttribute("data-value") || "high",
     thinking_enabled: $toggleThinking.classList.contains("active"),
   };
@@ -227,6 +249,7 @@ async function handleSend() {
   let thinkingEl: HTMLElement | null = null;
   let thinkingContentEl: HTMLElement | null = null;
   let thinkingText = "";
+  let rawContent = "";
 
   // Stream
   abortController = streamChat(
@@ -255,6 +278,27 @@ async function handleSend() {
           thinkingContentEl!.textContent = thinkingText;
           break;
 
+        case "tool_call":
+          {
+            const toolMsg = document.createElement("div");
+            toolMsg.className = "tool-call-msg";
+            const argsStr = chunk.args ? ` <span class="tool-args">${escapeHtml(JSON.stringify(chunk.args))}</span>` : "";
+            toolMsg.innerHTML = `<span class="tool-icon">&#9881;</span> 调用工具 <code>${escapeHtml(chunk.name)}</code>${argsStr}`;
+            assistantEl.querySelector(".msg-content")!.appendChild(toolMsg);
+            scrollToBottom();
+          }
+          break;
+
+        case "tool_result":
+          {
+            const resultMsg = document.createElement("div");
+            resultMsg.className = "tool-result-msg";
+            resultMsg.textContent = chunk.content;
+            assistantEl.querySelector(".msg-content")!.appendChild(resultMsg);
+            scrollToBottom();
+          }
+          break;
+
         case "content":
           if (thinkingEl) {
             const label = thinkingEl.querySelector(".thinking-label")!;
@@ -268,7 +312,8 @@ async function handleSend() {
             contentEl.className = "assistant-content";
             assistantEl.querySelector(".msg-content")!.appendChild(contentEl);
           }
-          contentEl.textContent += chunk.text;
+          rawContent += chunk.text;
+          contentEl.innerHTML = marked.parse(rawContent) as string;
           scrollToBottom();
           break;
 

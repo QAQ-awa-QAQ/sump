@@ -46,23 +46,23 @@
             <div class="settings-item">
               <label>模型</label>
               <div class="custom-select" id="custom-select-model">
-                <button class="cs-trigger" data-value="deepseek-v4-pro">
-                  <span class="cs-label">DeepSeek V4 Pro</span>
+                <button class="cs-trigger" data-value="deepseek-v4-flash">
+                  <span class="cs-label">DeepSeek V4 Flash</span>
                   <svg class="cs-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 </button>
                 <div class="cs-options">
                   <div class="cs-options-inner">
-                    <button class="cs-option selected" data-value="deepseek-v4-pro">DeepSeek V4 Pro</button>
                     <button class="cs-option" data-value="deepseek-v4-flash">DeepSeek V4 Flash</button>
+                    <button class="cs-option selected" data-value="deepseek-v4-pro">DeepSeek V4 Pro</button>
                   </div>
                 </div>
               </div>
             </div>
             <div class="settings-item settings-toggle-row">
               <label>深度思考</label>
-              <button id="toggle-thinking" class="toggle active" role="switch" aria-checked="true"></button>
+              <button id="toggle-thinking" class="toggle" role="switch" aria-checked="false"></button>
             </div>
-            <div id="effort-section" class="settings-collapse open">
+            <div id="effort-section" class="settings-collapse">
               <div class="settings-item">
                 <label>思考强度</label>
                 <div class="custom-select" id="custom-select-effort">

@@ -1,19 +1,31 @@
 """SUMP API 路由 —— REST + SSE 流式"""
 
 import json
+import os
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api.session_manager import SessionManager
-from sump.core.models.deepseek import DeepSeekClient
+from sump.agent import Agent
 from sump.config import Config
 
 router = APIRouter(prefix="/api")
 manager = SessionManager()
 config = Config()
+
+# ---- 全局 Agent（共享工具注册） ----
+_agent: Agent | None = None
+
+
+def _get_agent() -> Agent:
+    global _agent
+    if _agent is None:
+        _agent = Agent(config)
+    return _agent
+
 
 # ---- 请求体模型 ----
 
@@ -23,7 +35,7 @@ class CreateSessionRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     model: str = "deepseek-v4-flash"
-    reasoning_effort: str = "high"    # low | high | max（仅 thinking_enabled=true 时生效）
+    reasoning_effort: str = "high"
     thinking_enabled: bool = False
 
 class UpdateSettingsRequest(BaseModel):
@@ -76,29 +88,29 @@ async def chat(session_id: str, body: ChatRequest):
     if not session:
         raise HTTPException(404, "会话不存在")
 
-    # 更新会话设置
     session.settings.update({
         "model": body.model,
         "reasoning_effort": body.reasoning_effort,
         "thinking_enabled": body.thinking_enabled,
     })
 
-    # 添加用户消息
-    session.messages.append({"role": "user", "content": body.message})
-
-    # 构建临时 client（使用会话级设置）
-    client = _build_client(body)
+    agent = _get_agent()
+    # 同步 Agent 会话到前端会话
+    if agent.session_id != session_id:
+        agent.switch_session(session_id)
+    agent.llm._backend._model = body.model
+    agent.llm._backend._reasoning_effort = body.reasoning_effort
+    agent.llm._backend._thinking_enabled = body.thinking_enabled
 
     async def event_stream():
         try:
-            async for chunk in client.chat_stream(session.messages):
-                data = json.dumps(chunk, ensure_ascii=False)
+            async for event in agent.run_stream(body.message):
+                data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
                 yield f"data: {data}\n\n"
-
             yield "data: [DONE]\n\n"
-
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'text': str(e)}, ensure_ascii=False)}\n\n"
+            err = json.dumps({"type": "error", "text": str(e)}, ensure_ascii=False, separators=(",", ":"))
+            yield f"data: {err}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -121,24 +133,46 @@ async def list_models():
     ]
 
 
-# ---- 辅助 ----
+# ---- 记忆管理（委托 Agent 统一会话） ----
 
-def _build_client(body: ChatRequest) -> DeepSeekClient:
-    """用请求中的参数构建临时的 DeepSeek 客户端"""
-    import os
+memory_router = APIRouter(prefix="/api/memory")
 
-    class _Override:
-        pass
 
-    c = _Override()
-    c.get = lambda key, default=None: {  # type: ignore[attr-defined]
-        "deepseek.api_key": os.getenv("DEEPSEEK_API_KEY", ""),
-        "deepseek.base_url": "https://api.deepseek.com",
-        "deepseek.model": body.model,
-        "deepseek.reasoning_effort": body.reasoning_effort,
-        "deepseek.thinking_enabled": body.thinking_enabled,
-        "deepseek.max_tokens": 4096,
-        "deepseek.temperature": 1.0,
-    }.get(key, default)
+@memory_router.post("/sessions")
+async def create_memory_session():
+    agent = _get_agent()
+    sid = agent.new_session()
+    return {"id": sid}
 
-    return DeepSeekClient(c)  # type: ignore[arg-type]
+
+@memory_router.get("/sessions")
+async def list_memory_sessions():
+    agent = _get_agent()
+    return agent.memory.list_sessions()
+
+
+@memory_router.get("/sessions/{session_id}")
+async def get_memory_session(session_id: str):
+    agent = _get_agent()
+    return agent.memory.load_messages(session_id)
+
+
+@memory_router.post("/sessions/{session_id}/activate")
+async def activate_memory_session(session_id: str):
+    agent = _get_agent()
+    msgs = agent.memory.load_messages(session_id)
+    if not msgs:
+        raise HTTPException(404, "会话不存在")
+    agent.switch_session(session_id)
+    return {"id": session_id, "message_count": len(msgs)}
+
+
+@memory_router.delete("/sessions/{session_id}")
+async def delete_memory_session(session_id: str):
+    agent = _get_agent()
+    if not agent.memory.delete_session(session_id):
+        raise HTTPException(404, "会话不存在")
+    # 如果删的是当前会话，切回 default
+    if agent.session_id == session_id:
+        agent.switch_session("default")
+    return {"ok": True}

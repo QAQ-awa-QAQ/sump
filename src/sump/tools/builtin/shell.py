@@ -1,6 +1,7 @@
 """Shell 命令工具（无安全检查，前端负责权限警告）"""
 
 import asyncio
+import subprocess
 from typing import Any
 
 from sump.tools.base import Tool
@@ -28,19 +29,18 @@ class ShellTool(Tool):
         """执行命令，返回 stdout + stderr（截断至 4000 字符）。"""
         encoding = _detect_encoding()
         try:
-            proc = await asyncio.create_subprocess_shell(
+            proc = await asyncio.to_thread(
+                subprocess.run,
                 command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                shell=True,
+                capture_output=True,
+                timeout=30,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=30
-            )
-            out = stdout.decode(encoding, errors="replace")
-            err = stderr.decode(encoding, errors="replace")
+            out = proc.stdout.decode(encoding, errors="replace")
+            err = proc.stderr.decode(encoding, errors="replace")
             result = out + err if err else out
             return result[:4000] if result.strip() else "(无输出)"
-        except asyncio.TimeoutError:
+        except subprocess.TimeoutExpired:
             return "错误：命令执行超时（30 秒）"
         except Exception as e:
             return f"错误：{e}"

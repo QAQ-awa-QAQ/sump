@@ -37,7 +37,7 @@ class DeepSeekClient:
 
     async def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         stream: bool = False,
         tools: list[dict[str, Any]] | None = None,
@@ -63,11 +63,12 @@ class DeepSeekClient:
             "max_tokens": self._max_tokens,
         }
 
-        # thinking mode 相关参数
+        # thinking mode：必须显式开关，API 默认是开启的
+        kwargs["extra_body"] = {
+            "thinking": {"type": "enabled" if self._thinking_enabled else "disabled"}
+        }
         if self._thinking_enabled:
             kwargs["reasoning_effort"] = self._reasoning_effort
-            # thinking 参数非 OpenAI 标准字段，必须走 extra_body
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
         else:
             kwargs["temperature"] = self._temperature
 
@@ -89,19 +90,20 @@ class DeepSeekClient:
             },
         }
 
-    async def chat_text(self, messages: list[dict[str, str]]) -> str:
+    async def chat_text(self, messages: list[dict[str, Any]]) -> str:
         """简化接口：只返回文本回复内容。"""
         result = await self.chat(messages)
         return result["content"]
 
     async def chat_stream(
-        self, messages: list[dict[str, str]]
-    ) -> AsyncGenerator[dict[str, str], None]:
+        self, messages: list[dict[str, Any]]
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """流式对话，逐 token 产出。
 
         Yields:
             {"type": "reasoning", "text": "..."}   # 思维链片段
             {"type": "content", "text": "..."}      # 最终回复片段
+            {"type": "tool_call", "call": {...}}    # 工具调用
         """
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -109,9 +111,11 @@ class DeepSeekClient:
             "stream": True,
             "max_tokens": self._max_tokens,
         }
+        kwargs["extra_body"] = {
+            "thinking": {"type": "enabled" if self._thinking_enabled else "disabled"}
+        }
         if self._thinking_enabled:
             kwargs["reasoning_effort"] = self._reasoning_effort
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
         else:
             kwargs["temperature"] = self._temperature
 
@@ -123,6 +127,13 @@ class DeepSeekClient:
             reasoning = getattr(delta, "reasoning_content", None)
             if reasoning:
                 yield {"type": "reasoning", "text": reasoning}
+            elif delta.tool_calls:
+                for tc in delta.tool_calls:
+                    yield {"type": "tool_call", "call": {
+                        "id": tc.id or "",
+                        "name": tc.function.name if tc.function else "",
+                        "arguments": tc.function.arguments if tc.function else "",
+                    }}
             elif delta.content:
                 yield {"type": "content", "text": delta.content}
 

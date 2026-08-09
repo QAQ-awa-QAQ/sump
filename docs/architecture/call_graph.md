@@ -10,23 +10,22 @@
 用户输入
   │
   ▼
-Agent.chat_loop()                     ← 交互循环入口
-  └─ Agent.run(user_input)
-       ├─ Context.add_user_message()   ← 记录用户消息
-       ├─ Planner(ctx, llm).plan()    ← 生成执行计划
-       └─ Executor(ctx, llm, tools).execute(plan)
-            ├─ [无工具] _stream_respond()  ← 流式输出
-            │    └─ LLMClient.chat_stream(history)
-            │         └─ DeepSeekClient.chat_stream() → 逐 token
-            │              ├─ reasoning → 终端 dim 样式
-            │              └─ content   → 终端正常输出
-            ├─ [有工具] _run_with_tools()   ← 工具调用循环
-            │    └─ while not final_answer:
-            │         ├─ LLMClient.chat_full(history, tools=schemas)
-            │         │    └─ DeepSeekClient.chat() → DeepSeek API
-            │         ├─ if tool_calls: 执行工具 → Context.add_tool_message()
-            │         └─ else: _stream_respond() → 流式最终回复
-            └─ Context.add_assistant_message()  ← 记录完整回复
+Agent.run_stream(user_input)         ← 唯一入口（CLI/API 共用）
+  └─ Context.add_user_message()      ← 记录用户消息（自动持久化）
+  └─ Agent._run_core()               ← 核心循环
+       └─ for _ in range(10):        ← 工具调用循环
+            ├─ LLMClient.chat_full(history, tools=schemas)
+            │    └─ DeepSeekClient.chat() → DeepSeek API
+            ├─ if tool_calls:
+            │    ├─ yield {"type":"tool_call", ...}     → CLI 打印 / SSE 推送
+            │    ├─ 执行工具 → Context.add_tool_message()
+            │    └─ yield {"type":"tool_result", ...}   → CLI 打印 / SSE 推送
+            └─ else:
+                 └─ LLMClient.chat_stream(history)
+                      └─ yield {"type":"reasoning"|"content", ...}  → 流式输出
+
+CLI (examples/basic_chat.py):  消费事件 → ANSI 终端渲染
+API (src/api/routes.py):       消费事件 → SSE 序列化
 ```
 
 ## 模块间调用关系
@@ -37,40 +36,86 @@ graph TD
     A -->|实例化| CTX[core/context.py<br/>Context]
     A -->|实例化| LLM[core/models/__init__.py<br/>LLMClient]
     A -->|实例化| REG[tools/registry.py<br/>ToolRegistry]
-    A -->|每次 run| P[core/planner.py<br/>Planner]
-    A -->|每次 run| E[core/executor.py<br/>Executor]
+    A -->|实例化| MEM[memory/shallow.py<br/>ShallowMemory]
 
     LLM -->|委托| DS[core/models/deepseek.py<br/>DeepSeekClient]
     DS -->|HTTP| API[DeepSeek API]
 
-    CTX -->|类型| T[types.py<br/>Message/MemoryEntry/Task]
+    CTX -->|类型| T[types.py<br/>Message]
+    CTX -->|回调| MEM
     CFG -->|解析| YAML[configs/*.yaml]
 
-    E -->|调用| LLM
-    E -->|读写| CTX
-    E -->|持有| REG
+    A -->|核心循环| CORE[Agent._run_core]
+    CORE -->|调用| LLM
+    CORE -->|读写| CTX
+    CORE -->|调用| REG
     REG -->|注册| ST[tools/builtin/shell.py<br/>ShellTool]
-    P -->|待实现| LLM
+
+    CLI[CLI basic_chat.py] -->|消费事件| A
+    WEB[API routes.py] -->|消费事件| A
+    FE[frontend/ TypeScript] -->|SSE| WEB
 
     style A fill:#4a9eff,color:#fff
+    style CORE fill:#4a9eff,color:#fff
     style LLM fill:#f5a623,color:#fff
     style DS fill:#f5a623,color:#fff
     style CTX fill:#7ed321,color:#fff
-    style CFG fill:#7ed321,color:#fff
+    style MEM fill:#7ed321,color:#fff
     style ST fill:#e74c3c,color:#fff
+    style FE fill:#6366F1,color:#fff
+    style WEB fill:#22C55E,color:#fff
 ```
+
+## 前端架构 (TypeScript)
+
+```
+Vite + TypeScript SPA (src/frontend/)
+  ├─ index.html                     ← 入口（AI-Native UI / 浅色主题）
+  ├─ src/api.ts                     ← REST + SSE 客户端
+  │    ├─ Session CRUD              ← /api/sessions/*
+  │    ├─ MemorySession CRUD        ← /api/memory/sessions/*
+  │    └─ streamChat()              ← SSE 流式解析
+  ├─ src/main.ts                    ← 主逻辑
+  │    ├─ 会话管理（新建/切换/删除）
+  │    ├─ 设置面板（模型/思考强度/深度思考）
+  │    ├─ 流式聊天（marked + highlight.js 渲染）
+  │    ├─ 深度思考指示条（可展开推理内容）
+  │    └─ 工具调用展示（tool_call / tool_result）
+  └─ src/style.css                  ← 设计系统（Inter 字体 / 靛蓝主色）
+```
+
+### SSE 事件类型（前端消费）
+
+| type | 前端展示 |
+|------|----------|
+| `tool_call` | ⚙ 调用工具 `name` {args} |
+| `tool_result` | 等宽终端风格结果框 |
+| `reasoning` | 深度思考指示条（脉冲动画） |
+| `content` | Markdown 渲染 + 语法高亮 |
+| `error` | 红色错误提示 |
+| `[DONE]` | 流结束 |
 
 ## 逐文件详解
 
-### 1. `agent.py` — Agent（入口）
+### 1. `agent.py` — Agent（唯一业务层）
 
 | 方法 | 调用 | 被谁调用 |
 |------|------|----------|
-| `__init__(config?)` | `Config()` → `Context()` → `LLMClient()` | 外部实例化 |
-| `async run(user_input)` | `ctx.add_user_message()` → `Planner().plan()` → `Executor().execute()` | `chat_loop()`, 外部 |
-| `async chat_loop()` | `input()` → `run()` → `print()` | `examples/basic_chat.py` |
+| `__init__(config?)` | Config → Context → LLMClient → ToolRegistry → ShallowMemory → `_load_session()` | 外部实例化 |
+| `run_stream(user_input)` | `ctx.add_user_message()` → `_run_core()` → yield event | CLI / API |
+| `_run_core()` | `chat_full()` → 工具执行 → `chat_stream()` → yield event | run_stream |
+| `switch_session(id)` | `ctx.messages.clear()` → `_load_session()` | API memory 路由 |
+| `new_session()` | `uuid4().hex` → `switch_session()` | API memory 路由 |
 
 ---
+
+### 2. `core/planner.py` — Planner（预留）
+
+> 当前核心循环已内联至 `Agent._run_core()`，Planner 待后续接入复杂任务拆解。
+
+### 3. `core/executor.py` — Executor（预留）
+
+> 工具执行逻辑已内联至 `Agent._run_core()`，Executor 待后续接入调度执行。
 
 ### 2. `config.py` — Config
 
@@ -142,13 +187,13 @@ graph TD
 |----|------|----------|
 | `MemoryProvider` (ABC) | ✅ | `store / retrieve / forget / clear` |
 | `WorkingMemory` | ✅ | LRU + OrderedDict 实现 |
-| `ShallowMemory` | ⚠️ 桩 | SQLite 接口预留 |
+| `ShallowMemory` | ✅ | SQLite 完整实现（save/load/list/delete） |
 | `DeepMemory` | ⚠️ 桩 | 向量检索接口预留 |
 | `TaskMemory` | ✅ | 会话级 + scratchpad 便签 |
 | `SoulLoader` | ✅ | SOUL.md 文件加载 |
 | `MemoryCompressor` | ⚠️ 桩 | Working → Shallow 压缩 |
 
-> 当前记忆系统尚未接入主对话链路，Agent 仅通过 `Context.messages` 维护对话历史。
+> 会话持久化已接入主链路：每条消息通过 `Context.on_message` 回调自动写入 SQLite，启动时自动恢复。
 
 ---
 

@@ -2,6 +2,8 @@
 
 > **状态：开发中 | 版本 v0.1.4**
 
+> ⚠️ **警告：目前终端工具未加任何安全审核逻辑，请勿在生产环境使用。**
+
 SUMP 是一个面向 Agent 的轻量级运行时框架，核心围绕记忆分层、技能热插拔、工具沙箱与内置安全。
 
 ## 架构设计
@@ -17,10 +19,15 @@ SUMP 是一个面向 Agent 的轻量级运行时框架，核心围绕记忆分�
 - ✅ DeepSeek V4 API 接入（支持 thinking mode）
 - ✅ CLI 交互式对话（流式输出 + 上下文记忆）
 - ✅ FastAPI REST + SSE 流式 API 服务
-- ✅ Vite + TypeScript 前端（AI-Native UI / 浅色主题）
+- ✅ Vite + TypeScript 前端（AI-Native UI / 浅色主题 / Inter 字体）
 - ✅ 前端会话管理 / 模型切换 / 思考强度调节 / 深度思考指示条
-- ✅ Shell 工具：终端命令执行（LLM 可自主调用）
-- ⏳ 记忆系统接入
+- ✅ Markdown 渲染 + highlight.js 语法高亮 / 流式 SSE 输出
+- ✅ 工具调用可视化（tool_call / tool_result 终端风格展示）
+- ✅ API 记忆管理端点（前端 SDK 已就绪）
+- ✅ Shell 工具：终端命令执行（LLM 可自主调用，CLI + 前端均支持）
+- ✅ SQLite 会话持久化 + 历史回档（重启即恢复）
+- ✅ 统一 Agent 核心循环 `run_stream()`（CLI 和 API 纯消费层）
+- ✅ 会话管理 API（创建/切换/删除/列出）
 - ⏳ 技能系统实现
 - ⏳ 安全审查
 

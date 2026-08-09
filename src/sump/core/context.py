@@ -1,5 +1,6 @@
 """运行时上下文"""
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -9,21 +10,26 @@ from sump.types import Message
 
 @dataclass
 class Context:
-    """Agent 运行时上下文，管理消息历史和状态"""
+    """Agent 运行时上下文，管理消息历史和状态。"""
 
     config: Config
     messages: list[Message] = field(default_factory=list)
     round_count: int = 0
+    on_message: Callable[[Message], None] | None = None
 
     def add_user_message(self, content: str) -> None:
-        self.messages.append(Message(role="user", content=content))
+        self._append(Message(role="user", content=content))
 
     def add_assistant_message(self, content: str) -> None:
-        self.messages.append(Message(role="assistant", content=content))
+        self._append(Message(role="assistant", content=content))
 
     def add_tool_message(self, tool_call_id: str, content: str) -> None:
-        """记录工具执行结果。"""
-        self.messages.append(Message(role="tool", content=content, tool_call_id=tool_call_id))
+        self._append(Message(role="tool", content=content, tool_call_id=tool_call_id))
+
+    def _append(self, msg: Message) -> None:
+        self.messages.append(msg)
+        if self.on_message:
+            self.on_message(msg)
 
     @property
     def history(self) -> list[dict[str, Any]]:
