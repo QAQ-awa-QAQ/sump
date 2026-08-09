@@ -17,6 +17,15 @@ memory:
     embedding_model: "text-embedding-3-small"
     top_k: 10
 
+deepseek:
+  api_key: ""                           # 或通过环境变量 DEEPSEEK_API_KEY 设置
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-v4-pro"              # deepseek-v4-pro / deepseek-v4-flash
+  reasoning_effort: "high"              # low / high / max
+  thinking_enabled: true                # 是否启用思维链推理
+  max_tokens: 4096
+  temperature: 1.0                      # 仅在 thinking_enabled=false 时生效
+
 tools:
   builtin:
     file: {enabled: true}
