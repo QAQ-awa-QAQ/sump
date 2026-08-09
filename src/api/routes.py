@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from sump.api.session_manager import SessionManager
+from api.session_manager import SessionManager
 from sump.core.models.deepseek import DeepSeekClient
 from sump.config import Config
 

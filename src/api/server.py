@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from sump.api.routes import router
+from api.routes import router
 
 
 def create_app() -> FastAPI:
@@ -26,4 +26,4 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("sump.api.server:app", host="0.0.0.0", port=8765, reload=True)
+    uvicorn.run("api.server:app", host="0.0.0.0", port=8765, reload=True)
