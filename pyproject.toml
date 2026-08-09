@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Smart Unified Memory & Platform - Agent runtime framework"
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
     {name = "XR", email = "2271917353@qq.com"}
 ]
@@ -34,7 +34,7 @@ all = ["sump[dev,mem0,zep]"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
