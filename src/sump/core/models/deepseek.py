@@ -25,9 +25,9 @@ class DeepSeekClient:
         api_key = config.get("deepseek.api_key") or os.getenv("DEEPSEEK_API_KEY", "")
         base_url = config.get("deepseek.base_url", "https://api.deepseek.com")
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self._model = config.get("deepseek.model", "deepseek-v4-pro")
+        self._model = config.get("deepseek.model", "deepseek-v4-flash")
         self._reasoning_effort = config.get("deepseek.reasoning_effort", "high")
-        self._thinking_enabled = config.get("deepseek.thinking_enabled", True)
+        self._thinking_enabled = config.get("deepseek.thinking_enabled", False)
         self._max_tokens = config.get("deepseek.max_tokens", 4096)
         self._temperature = config.get("deepseek.temperature", 1.0)
 

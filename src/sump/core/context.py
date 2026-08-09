@@ -1,6 +1,7 @@
 """运行时上下文"""
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from sump.config import Config
 from sump.types import Message
@@ -20,6 +21,18 @@ class Context:
     def add_assistant_message(self, content: str) -> None:
         self.messages.append(Message(role="assistant", content=content))
 
+    def add_tool_message(self, tool_call_id: str, content: str) -> None:
+        """记录工具执行结果。"""
+        self.messages.append(Message(role="tool", content=content, tool_call_id=tool_call_id))
+
     @property
-    def history(self) -> list[dict[str, str]]:
-        return [{"role": m.role, "content": m.content} for m in self.messages[-50:]]
+    def history(self) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for m in self.messages[-50:]:
+            entry: dict[str, Any] = {"role": m.role, "content": m.content}
+            if m.tool_call_id:
+                entry["tool_call_id"] = m.tool_call_id
+            if m.tool_calls:
+                entry["tool_calls"] = m.tool_calls
+            result.append(entry)
+        return result

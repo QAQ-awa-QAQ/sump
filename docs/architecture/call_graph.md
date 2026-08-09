@@ -1,6 +1,6 @@
 # SUMP 函数调用关系图
 
-> 版本: v0.1.3 | 更新: 2026-08-09
+> 版本: v0.1.4 | 更新: 2026-08-09
 
 ---
 
@@ -14,14 +14,18 @@ Agent.chat_loop()                     ← 交互循环入口
   └─ Agent.run(user_input)
        ├─ Context.add_user_message()   ← 记录用户消息
        ├─ Planner(ctx, llm).plan()    ← 生成执行计划
-       └─ Executor(ctx, llm).execute(plan)
-            ├─ Context.history          ← 读取消息历史
-            ├─ Executor._stream_respond()  ← 流式输出
+       └─ Executor(ctx, llm, tools).execute(plan)
+            ├─ [无工具] _stream_respond()  ← 流式输出
             │    └─ LLMClient.chat_stream(history)
-            │         └─ DeepSeekClient.chat_stream()
-            │              └─ async for chunk → yield {"type":"reasoning"|"content","text":...}
-            │                   ├─ reasoning → 终端 dim 样式输出
-            │                   └─ content → 终端正常输出
+            │         └─ DeepSeekClient.chat_stream() → 逐 token
+            │              ├─ reasoning → 终端 dim 样式
+            │              └─ content   → 终端正常输出
+            ├─ [有工具] _run_with_tools()   ← 工具调用循环
+            │    └─ while not final_answer:
+            │         ├─ LLMClient.chat_full(history, tools=schemas)
+            │         │    └─ DeepSeekClient.chat() → DeepSeek API
+            │         ├─ if tool_calls: 执行工具 → Context.add_tool_message()
+            │         └─ else: _stream_respond() → 流式最终回复
             └─ Context.add_assistant_message()  ← 记录完整回复
 ```
 
@@ -32,6 +36,7 @@ graph TD
     A[agent.py<br/>Agent] -->|实例化| CFG[config.py<br/>Config]
     A -->|实例化| CTX[core/context.py<br/>Context]
     A -->|实例化| LLM[core/models/__init__.py<br/>LLMClient]
+    A -->|实例化| REG[tools/registry.py<br/>ToolRegistry]
     A -->|每次 run| P[core/planner.py<br/>Planner]
     A -->|每次 run| E[core/executor.py<br/>Executor]
 
@@ -43,6 +48,8 @@ graph TD
 
     E -->|调用| LLM
     E -->|读写| CTX
+    E -->|持有| REG
+    REG -->|注册| ST[tools/builtin/shell.py<br/>ShellTool]
     P -->|待实现| LLM
 
     style A fill:#4a9eff,color:#fff
@@ -50,6 +57,7 @@ graph TD
     style DS fill:#f5a623,color:#fff
     style CTX fill:#7ed321,color:#fff
     style CFG fill:#7ed321,color:#fff
+    style ST fill:#e74c3c,color:#fff
 ```
 
 ## 逐文件详解
@@ -99,8 +107,9 @@ graph TD
 
 | 方法 | 调用 | 被谁调用 |
 |------|------|----------|
-| `async execute(plan)` | `_stream_respond()` → `ctx.add_assistant_message()` | Agent.run |
-| `async _stream_respond()` | `llm.chat_stream(history)` → 终端实时打印（dim 思维链 + 正常回复） | execute |
+| `async execute(plan)` | 有工具 → `_run_with_tools()`；无工具 → `_stream_respond()` | Agent.run |
+| `async _run_with_tools()` | `llm.chat_full(history, tools)` → 执行工具 → `ctx.add_tool_message()` → 循环 → `_stream_respond()` | execute |
+| `async _stream_respond()` | `llm.chat_stream(history)` → 终端实时打印 | execute, _run_with_tools |
 
 ---
 
@@ -153,7 +162,7 @@ graph TD
 | `DateTimeTool` | ⚠️ 桩 | 内置日期工具 |
 | `FileTool` | ⚠️ 桩 | 内置文件工具 |
 | `SearchTool` | ⚠️ 桩 | 内置搜索工具 |
-| `ShellTool` | ⚠️ 桩 | 内置 Shell 工具 |
+| `ShellTool` | ✅ | `subprocess` 执行，GBK 编码适配 |
 | `WebTool` | ⚠️ 桩 | 内置 Web 工具 |
 | `tools/mcp/client.py` | ⚠️ 桩 | MCP 客户端 |
 | `tools/mcp/sandbox.py` | ⚠️ 桩 | MCP 沙箱 |

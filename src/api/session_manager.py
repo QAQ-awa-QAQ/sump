@@ -14,9 +14,9 @@ class Session:
         self.created_at = datetime.now(timezone.utc)
         self.messages: list[dict[str, str]] = []
         self.settings: dict[str, Any] = {
-            "model": "deepseek-v4-pro",
+            "model": "deepseek-v4-flash",
             "reasoning_effort": "high",
-            "thinking_enabled": True,
+            "thinking_enabled": False,
         }
 
     def to_dict(self) -> dict[str, Any]:

@@ -20,9 +20,9 @@ memory:
 deepseek:
   api_key: ""                           # 或通过环境变量 DEEPSEEK_API_KEY 设置
   base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-pro"              # deepseek-v4-pro / deepseek-v4-flash
-  reasoning_effort: "high"              # low / high / max
-  thinking_enabled: true                # 是否启用思维链推理
+  model: "deepseek-v4-flash"            # deepseek-v4-flash / deepseek-v4-pro
+  reasoning_effort: "high"              # low / high / max（仅 thinking_enabled=true 时生效）
+  thinking_enabled: false               # 是否启用思维链推理（默认关闭，按需开启）
   max_tokens: 4096
   temperature: 1.0                      # 仅在 thinking_enabled=false 时生效
 

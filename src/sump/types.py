@@ -23,6 +23,8 @@ class SkillProficiency(str, Enum):
 class Message(BaseModel):
     role: str
     content: str
+    tool_call_id: str = ""
+    tool_calls: list[dict[str, Any]] | None = None
     timestamp: datetime = Field(default_factory=datetime.now)
 
 

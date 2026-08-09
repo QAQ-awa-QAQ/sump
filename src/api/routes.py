@@ -22,9 +22,9 @@ class CreateSessionRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
-    model: str = "deepseek-v4-pro"
-    reasoning_effort: str = "high"    # low | high | max
-    thinking_enabled: bool = True
+    model: str = "deepseek-v4-flash"
+    reasoning_effort: str = "high"    # low | high | max（仅 thinking_enabled=true 时生效）
+    thinking_enabled: bool = False
 
 class UpdateSettingsRequest(BaseModel):
     model: str | None = None
