@@ -1,5 +1,6 @@
 """LLM 客户端封装 —— 统一入口，按配置选择后端"""
 
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from sump.config import Config
@@ -21,3 +22,9 @@ class LLMClient:
     ) -> dict[str, Any]:
         """发送对话请求，返回完整响应（含 reasoning_content、tool_calls、usage）。"""
         return await self._backend.chat(messages, tools=tools)
+
+    def chat_stream(
+        self, messages: list[dict[str, str]]
+    ) -> AsyncGenerator[dict[str, str], None]:
+        """流式对话，逐 token 产出 {"type": "reasoning"|"content", "text": ...}。"""
+        return self._backend.chat_stream(messages)

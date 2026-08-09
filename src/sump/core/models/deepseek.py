@@ -1,6 +1,7 @@
 """DeepSeek V4 API 客户端"""
 
 import os
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -92,6 +93,38 @@ class DeepSeekClient:
         """简化接口：只返回文本回复内容。"""
         result = await self.chat(messages)
         return result["content"]
+
+    async def chat_stream(
+        self, messages: list[dict[str, str]]
+    ) -> AsyncGenerator[dict[str, str], None]:
+        """流式对话，逐 token 产出。
+
+        Yields:
+            {"type": "reasoning", "text": "..."}   # 思维链片段
+            {"type": "content", "text": "..."}      # 最终回复片段
+        """
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "stream": True,
+            "max_tokens": self._max_tokens,
+        }
+        if self._thinking_enabled:
+            kwargs["reasoning_effort"] = self._reasoning_effort
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        else:
+            kwargs["temperature"] = self._temperature
+
+        stream = await self._client.chat.completions.create(**kwargs)
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield {"type": "reasoning", "text": reasoning}
+            elif delta.content:
+                yield {"type": "content", "text": delta.content}
 
     # ------------------------------------------------------------------
     # 内部工具
