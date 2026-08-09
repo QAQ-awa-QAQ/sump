@@ -29,6 +29,7 @@ dev = [
     "pytest-asyncio>=0.21",
     "pre-commit>=3.0",
     "ruff>=0.1",
+    "mypy>=1.0",
 ]
 mem0 = ["mem0ai>=0.1"]
 zep = ["zep-python>=1.0"]
@@ -40,6 +41,13 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

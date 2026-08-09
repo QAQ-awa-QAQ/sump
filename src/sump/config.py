@@ -35,7 +35,7 @@ class Config:
         node = self._data
         for k in keys:
             if isinstance(node, dict):
-                node = node.get(k)
+                node = node.get(k)  # type: ignore[assignment]
             else:
                 return default
         return node if node is not None else default

@@ -11,5 +11,4 @@ class KeyOutput:
         if data:
             for k, v in data.items():
                 lines.append(f"  {k}: {v}")
-        return "
-".join(lines)
+        return "\n".join(lines)

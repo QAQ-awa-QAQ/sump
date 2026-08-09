@@ -93,7 +93,7 @@ class DeepSeekClient:
     async def chat_text(self, messages: list[dict[str, Any]]) -> str:
         """简化接口：只返回文本回复内容。"""
         result = await self.chat(messages)
-        return result["content"]
+        return str(result["content"])
 
     async def chat_stream(
         self, messages: list[dict[str, Any]]
