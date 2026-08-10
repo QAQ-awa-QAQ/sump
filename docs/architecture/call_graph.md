@@ -86,23 +86,25 @@ Vite + TypeScript SPA (src/frontend/)
   │    ├─ MemorySession CRUD        ← /api/memory/sessions/*
   │    └─ streamChat()              ← SSE 流式解析
   ├─ src/main.ts                    ← 主逻辑
-  │    ├─ 会话管理（新建/切换/删除）
-  │    ├─ 设置面板（模型/思考强度/深度思考）
+  │    ├─ 会话管理（新建/切换/删除/重命名）
+  │    ├─ 设置面板（模型/深度思考/思考强度/自动展开思考内容）
   │    ├─ 流式聊天（marked + highlight.js 渲染）
-  │    ├─ 深度思考指示条（可展开推理内容）
-  │    └─ 工具调用展示（tool_call / tool_result）
-  └─ src/style.css                  ← 设计系统（Inter 字体 / 靛蓝主色）
+  │    ├─ 深度思考指示条（可展开推理内容，自动追踪+暂停指示点）
+  │    ├─ 工具调用展示（tool_call / tool_result 终端暗色风格）
+  │    └─ 安全审查内嵌展示（security-info 卡片：命令/危险等级/作用）
+  └─ src/style.css                  ← 设计系统（DeepSeek 风格 / 居中布局 / 悬浮输入框）
 ```
 
 ### SSE 事件类型（前端消费）
 
 | type | 前端展示 |
 |------|----------|
-| `tool_call` | ⚙ 调用工具 `name` {args} |
-| `tool_result` | 等宽终端风格结果框 |
+| `tool_call` | ⚙ 调用工具 `name` {args}（淡紫背景圆角框） |
+| `tool_result` | 暗色终端风格（#1E1E1E 黑底等宽字体） |
 | `security_check` | 安全审查指示 / 审批弹窗（safe=🟢 命令确认, risky=🔴 危险确认） |
-| `security_check_detail` | LLM Flash 详细分析更新弹窗内容 |
-| `reasoning` | 深度思考指示条（脉冲动画） |
+| `security_check_detail` | 内嵌 security-info 卡片（命令/危险等级/作用 格式化） |
+| `session_name` | 侧边栏 + 标题栏会话名更新 |
+| `reasoning` | 深度思考指示条（可展开，自动追踪 + 暂停指示点） |
 | `content` | Markdown 渲染 + 语法高亮 |
 | `continue` | 审批完成继续对话指示 |
 | `error` | 红色错误提示 |
@@ -201,13 +203,13 @@ Vite + TypeScript SPA (src/frontend/)
 |----|------|----------|
 | `MemoryProvider` (ABC) | ✅ | `store / retrieve / forget / clear` |
 | `WorkingMemory` | ✅ | LRU + OrderedDict 实现 |
-| `ShallowMemory` | ✅ | SQLite 完整实现（save/load/list/delete） |
+| `ShallowMemory` | ✅ | SQLite 完整实现（save/load/list/delete/upsert_session_name/update_tool_message） |
 | `DeepMemory` | ⚠️ 桩 | 向量检索接口预留 |
 | `TaskMemory` | ✅ | 会话级 + scratchpad 便签 |
 | `SoulLoader` | ✅ | SOUL.md 文件加载 |
 | `MemoryCompressor` | ⚠️ 桩 | Working → Shallow 压缩 |
 
-> 会话持久化已接入主链路：每条消息通过 `Context.on_message` 回调自动写入 SQLite，启动时自动恢复。
+> 会话持久化已接入主链路：每条消息通过 `Context.on_message` 回调自动写入 SQLite，启动时自动恢复。reasoning_content 列支持思考内容持久化。sessions 表维护会话名，审批后通过 update_tool_message 替换待确认文本。
 
 ---
 
@@ -248,7 +250,7 @@ Vite + TypeScript SPA (src/frontend/)
 | `rules/blacklist.yaml` | ✅ | 高危命令黑名单（rm/del/format/shutdown 等） |
 | `rules/whitelist.yaml` | ✅ | 安全命令白名单（dir/ls/echo/type 等） |
 
-> 审批流：Judge.analyze()（规则秒出）→ Judge.analyze_llm()（LLM Flash）→ Interceptor.check() 终裁 → SecurityEvent 推送前端 → 用户审批 → approve_command 执行/拒绝。API 模式下 safe/risky 统一走挂起审批，消除竞态。
+> 审批流：Judge.analyze()（规则秒出）→ Judge.analyze_llm()（LLM Flash）→ Interceptor.check() 终裁 → SecurityEvent 推送前端 → 用户审批 → approve_command 执行/拒绝。审批后通过 update_tool_message 持久化替换待确认文本，刷新不丢失。API 模式下 safe/risky 统一走挂起审批，消除竞态。
 
 ---
 

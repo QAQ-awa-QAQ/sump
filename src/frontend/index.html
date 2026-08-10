@@ -62,10 +62,6 @@
               <label>深度思考</label>
               <button id="toggle-thinking" class="toggle" role="switch" aria-checked="false"></button>
             </div>
-            <div class="settings-item settings-toggle-row">
-              <label>低危自动同意</label>
-              <button id="toggle-auto-approve" class="toggle" role="switch" aria-checked="false"></button>
-            </div>
             <div id="effort-section" class="settings-collapse">
               <div class="settings-item">
                 <label>思考强度</label>
@@ -83,6 +79,14 @@
                   </div>
                 </div>
               </div>
+              <div class="settings-item settings-toggle-row">
+                <label>自动展开思考内容</label>
+                <button id="toggle-track-thinking" class="toggle active" role="switch" aria-checked="true"></button>
+              </div>
+            </div>
+            <div class="settings-item settings-toggle-row">
+              <label>低危自动同意</label>
+              <button id="toggle-auto-approve" class="toggle" role="switch" aria-checked="false"></button>
             </div>
           </div>
         </div>
@@ -102,15 +106,15 @@
             <div class="welcome-hints"><span>试试问我：帮我分析一个复杂问题</span></div>
           </div>
         </div>
-        <div id="input-area">
-          <div class="input-wrapper">
-            <textarea id="input-message" placeholder="输入消息… (Enter 发送, Shift+Enter 换行)" rows="1"></textarea>
-            <button id="btn-send" class="btn-send" title="发送">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
-              </svg>
-            </button>
-          </div>
+      </div>
+      <div id="input-area">
+        <div class="input-wrapper">
+          <textarea id="input-message" placeholder="输入消息… (Enter 发送, Shift+Enter 换行)" rows="1"></textarea>
+          <button id="btn-send" class="btn-send" title="发送">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
+            </svg>
+          </button>
         </div>
       </div>
     </main>

@@ -6,6 +6,7 @@ const BASE = "/api";
 
 export interface Session {
   id: string;
+  name: string;
   msg_count: number;
   created_at: string;
 }
@@ -60,6 +61,14 @@ export async function deleteSession(id: string): Promise<void> {
   await fetch(`${BASE}/sessions/${id}`, { method: "DELETE" });
 }
 
+export async function renameSession(id: string, name: string): Promise<void> {
+  await fetch(`${BASE}/sessions/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
 // ---- Models ----
 
 export async function listModels(): Promise<Model[]> {
@@ -75,6 +84,7 @@ export type StreamChunk =
   | { type: "security_check"; verdict: string; call_id: string; command: string; summary: string; danger: string; concerns: string[]; analysis_source: string }
   | { type: "security_check_detail"; verdict: string; call_id: string; command: string; summary: string; danger: string; concerns: string[]; analysis_source: string }
   | { type: "continue"; text: string }
+  | { type: "session_name"; session_id: string; name: string }
   | { type: "reasoning"; text: string }
   | { type: "content"; text: string }
   | { type: "error"; text: string }

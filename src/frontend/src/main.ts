@@ -34,6 +34,7 @@ import {
   getSessionDetail,
   activateSession,
   deleteSession,
+  renameSession,
   streamChat,
   approveTool,
 } from "./api";
@@ -55,6 +56,7 @@ const $inputMessage = document.getElementById("input-message") as HTMLTextAreaEl
 const $btnSend = document.getElementById("btn-send") as HTMLButtonElement;
 const $btnNewSession = document.getElementById("btn-new-session")!;
 const $toggleThinking = document.getElementById("toggle-thinking")!;
+const $toggleTrackThinking = document.getElementById("toggle-track-thinking")!;
 const $toggleAutoApprove = document.getElementById("toggle-auto-approve")!;
 const $currentSessionName = document.getElementById("current-session-name")!;
 const $btnSettings = document.getElementById("btn-settings")!;
@@ -64,6 +66,8 @@ const $csModel = document.getElementById("custom-select-model")!;
 const $csEffort = document.getElementById("custom-select-effort")!;
 
 // ---- Settings State ----
+
+let autoTrackThinking = true;
 
 function getSettings(): SessionSettings {
   return {
@@ -156,11 +160,55 @@ function renderSessionList() {
   $sessionList.innerHTML = sessions
     .map((s) => `
     <div class="session-item${currentSessionId === s.id ? " active" : ""}" data-sid="${s.id}">
-      <span class="name">${escapeHtml(s.id.slice(0, 8))}</span>
+      <span class="name">${escapeHtml(s.name || s.id.slice(0, 8))}</span>
       <span class="count">${s.msg_count}</span>
-      <button class="delete-btn" data-delete="${s.id}">×</button>
+      <button class="edit-btn" data-edit="${s.id}" title="重命名">
+        <svg width="14" height="14" viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M96 216L48 216L48 168L192 24L232 64Z" />
+          <line x1="168" y1="48" x2="208" y2="88" />
+        </svg>
+      </button>
+      <button class="delete-btn" data-delete="${s.id}" title="删除">×</button>
     </div>`)
     .join("");
+}
+
+function startRename(sid: string, currentName: string) {
+  const item = $sessionList.querySelector(`[data-sid="${sid}"]`);
+  const nameEl = item?.querySelector(".name") as HTMLElement | null;
+  if (!nameEl) return;
+
+  const input = document.createElement("input");
+  input.className = "rename-input";
+  input.value = currentName;
+  input.setSelectionRange(0, input.value.length);
+
+  const commit = async () => {
+    const newName = input.value.trim();
+    input.replaceWith(document.createTextNode(""));
+    if (newName && newName !== currentName) {
+      try {
+        await renameSession(sid, newName);
+        const session = sessions.find((s) => s.id === sid);
+        if (session) session.name = newName;
+        renderSessionList();
+        if (sid === currentSessionId) {
+          $currentSessionName.textContent = newName;
+        }
+      } catch { renderSessionList(); }
+    } else {
+      renderSessionList();
+    }
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    if (e.key === "Escape") { input.value = currentName; input.blur(); }
+  });
+  input.addEventListener("blur", commit);
+
+  nameEl.replaceWith(input);
+  input.focus();
 }
 
 async function handleNewSession() {
@@ -194,6 +242,30 @@ async function loadSession(id: string) {
       } else if (msg.role === "assistant") {
         const el = addMessage("assistant", "");
         const mc = el.querySelector(".msg-content")!;
+
+        // 恢复思考内容
+        if (msg.reasoning_content) {
+          const thinkingBar = document.createElement("div");
+          thinkingBar.className = "thinking-indicator-bar done";
+          thinkingBar.innerHTML = '<span class="thinking-label">深度思考已完成</span>';
+          const thinkingContent = document.createElement("div");
+          thinkingContent.className = "thinking-content";
+          thinkingContent.textContent = msg.reasoning_content;
+          thinkingBar.appendChild(thinkingContent);
+          thinkingBar.addEventListener("click", (e) => {
+            const bar = e.currentTarget as HTMLElement;
+            const inner = bar.querySelector(".thinking-content") as HTMLElement;
+            if (inner) {
+              const opening = !inner.classList.contains("open");
+              inner.classList.toggle("open");
+              if (opening) bar.classList.add("expanded");
+              else bar.classList.remove("expanded");
+              scrollToUserMsg(bar);
+            }
+          });
+          mc.appendChild(thinkingBar);
+        }
+
         if (msg.tool_calls?.length) {
           for (const tc of msg.tool_calls) {
             const t = document.createElement("div");
@@ -210,16 +282,32 @@ async function loadSession(id: string) {
         }
         currentAssistantEl = el;
       } else if (msg.role === "tool") {
-        const t = document.createElement("div");
-        t.className = "tool-result-msg";
-        t.textContent = msg.content;
-        (currentAssistantEl?.querySelector(".msg-content") ?? $chatMessages).appendChild(t);
+        const content = msg.content || "";
+        // 解析"⛔ 安全审查待确认"格式
+        const pendingMatch = content.match(/⛔ 安全审查待确认 \| call_id: (\S+) \| 命令: (.+?) \| 意图: (.+?) \| 危险等级: (\S+)/);
+        if (pendingMatch) {
+          const info = document.createElement("div");
+          info.className = "security-info";
+          info.innerHTML =
+            `<div class="si-row"><span class="si-label">命令：</span><code>${escapeHtml(pendingMatch[2])}</code></div>` +
+            `<div class="si-row"><span class="si-label">危险等级：</span><span class="sd-danger sd-${pendingMatch[4]}">${pendingMatch[4]}</span></div>` +
+            `<div class="si-row"><span class="si-label">作用：</span>${escapeHtml(pendingMatch[3])}</div>` +
+            `<div class="si-row" style="margin-top:4px;color:var(--color-muted);font-style:italic">⏳ 等待审批</div>`;
+          (currentAssistantEl?.querySelector(".msg-content") ?? $chatMessages).appendChild(info);
+        } else {
+          const t = document.createElement("div");
+          t.className = "tool-result-msg";
+          t.textContent = content;
+          (currentAssistantEl?.querySelector(".msg-content") ?? $chatMessages).appendChild(t);
+        }
       }
     });
 
     currentSessionId = id;
     localStorage.setItem("sump_session_id", id);
-    $currentSessionName.textContent = id.slice(0, 8);
+    // 从会话列表中取 name
+    const found = sessions.find((s) => s.id === id);
+    $currentSessionName.textContent = found?.name || id.slice(0, 8);
     renderSessionList();
     scrollToBottom();
   } catch { /* ignore */ }
@@ -294,18 +382,59 @@ async function handleSend() {
             thinkingEl = document.createElement("div");
             thinkingEl.className = "thinking-indicator-bar";
             thinkingEl.innerHTML = '<span class="thinking-label">深度思考中…</span>';
+            // 追踪指示点
+            const trackDot = document.createElement("span");
+            trackDot.className = "track-dot";
+            thinkingEl.appendChild(trackDot);
             thinkingContentEl = document.createElement("div");
             thinkingContentEl.className = "thinking-content";
             thinkingEl.appendChild(thinkingContentEl);
+
+            // 点击展开/折叠 → 滚动到对应用户消息
             thinkingEl.addEventListener("click", (e) => {
               const bar = e.currentTarget as HTMLElement;
-              bar.classList.toggle("expanded");
               const inner = bar.querySelector(".thinking-content") as HTMLElement;
-              if (inner) inner.classList.toggle("open");
+              if (inner) {
+                const opening = !inner.classList.contains("open");
+                inner.classList.toggle("open");
+                if (opening) bar.classList.add("expanded");
+                else bar.classList.remove("expanded");
+                scrollToUserMsg(bar);
+              }
             });
+
+            // 思考内容滚动追踪
+            thinkingContentEl.addEventListener("scroll", () => {
+              if (!autoTrackThinking || !thinkingContentEl) return;
+              const el = thinkingContentEl;
+              const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+              const trackDot = thinkingEl?.querySelector(".track-dot");
+              if (atBottom) {
+                trackDot?.classList.remove("paused");
+              } else {
+                trackDot?.classList.add("paused");
+              }
+            });
+
             assistantEl.querySelector(".msg-content")!.prepend(thinkingEl);
+
+            // 自动展开
+            if (autoTrackThinking) {
+              thinkingContentEl.classList.add("open");
+              thinkingEl.classList.add("expanded");
+              scrollToBottom();
+            }
           }
           thinkingContentEl!.textContent = thinkingText;
+          // 自动滚动思考内容 + 聊天窗口
+          if (autoTrackThinking && thinkingContentEl) {
+            const el = thinkingContentEl;
+            const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+            if (atBottom || !el.classList.contains("open")) {
+              el.scrollTop = el.scrollHeight;
+            }
+            scrollToBottom();
+          }
           break;
 
         case "tool_call":
@@ -376,6 +505,20 @@ async function handleSend() {
           scrollToBottom();
           break;
 
+        case "session_name":
+          // 更新侧边栏会话名 + 顶部标题
+          {
+            const idx = sessions.findIndex((s) => s.id === chunk.session_id);
+            if (idx !== -1) {
+              sessions[idx].name = chunk.name;
+            }
+            renderSessionList();
+            if (chunk.session_id === currentSessionId) {
+              $currentSessionName.textContent = chunk.name;
+            }
+          }
+          break;
+
         case "error":
           addMessage("error", chunk.text);
           break;
@@ -430,6 +573,19 @@ function scrollToBottom() {
   $chatMessages.scrollTop = $chatMessages.scrollHeight;
 }
 
+function scrollToUserMsg(thinkingBar: HTMLElement) {
+  const assistantMsg = thinkingBar.closest(".message.assistant");
+  if (!assistantMsg) return;
+  const userMsg = assistantMsg.previousElementSibling as HTMLElement | null;
+  if (!userMsg || !userMsg.classList.contains("user")) return;
+  const chatRect = $chatMessages.getBoundingClientRect();
+  const userRect = userMsg.getBoundingClientRect();
+  $chatMessages.scrollTo({
+    top: $chatMessages.scrollTop + userRect.top - chatRect.top - 10,
+    behavior: "smooth",
+  });
+}
+
 // ---- Security ----
 
 const _securityDialogs: Map<string, HTMLElement> = new Map();
@@ -467,8 +623,11 @@ function updateSecurityDetail(chunk: Extract<StreamChunk, { type: "security_chec
   // 替换 pending 占位为实际分析
   const pending = _pendingMessages.get(chunk.call_id);
   if (pending) {
-    pending.className = "tool-call-msg";
-    pending.innerHTML = `<span class="tool-icon">&#128737;</span> 安全审查 <code>${escapeHtml(chunk.command)}</code> <span class="sd-danger sd-${chunk.danger}">${chunk.danger}</span><br><span class="sd-summary-text">${escapeHtml(chunk.summary)}</span>`;
+    pending.className = "security-info";
+    pending.innerHTML =
+      `<div class="si-row"><span class="si-label">命令：</span><code>${escapeHtml(chunk.command)}</code></div>` +
+      `<div class="si-row"><span class="si-label">危险等级：</span><span class="sd-danger sd-${chunk.danger}">${chunk.danger}</span></div>` +
+      `<div class="si-row"><span class="si-label">作用：</span>${escapeHtml(chunk.summary)}</div>`;
     _pendingMessages.delete(chunk.call_id);
   }
   // 也更新已有的弹窗
@@ -631,6 +790,8 @@ function bindEvents() {
   $sessionList.addEventListener("click", (e) => {
     const item = (e.target as HTMLElement).closest(".session-item");
     if (!item) return;
+
+    // 删除按钮
     const delBtn = (e.target as HTMLElement).closest("[data-delete]");
     if (delBtn) {
       e.stopPropagation();
@@ -644,6 +805,18 @@ function bindEvents() {
       refreshSessions();
       return;
     }
+
+    // 编辑（重命名）按钮
+    const editBtn = (e.target as HTMLElement).closest("[data-edit]");
+    if (editBtn) {
+      e.stopPropagation();
+      const sid = editBtn.getAttribute("data-edit")!;
+      const session = sessions.find((s) => s.id === sid);
+      if (!session) return;
+      startRename(sid, session.name || sid.slice(0, 8));
+      return;
+    }
+
     const id = item.getAttribute("data-sid")!;
     loadSession(id);
   });
@@ -673,6 +846,21 @@ function bindEvents() {
       $effortSection.classList.add("open");
     } else {
       $effortSection.classList.remove("open");
+    }
+  });
+
+  $toggleTrackThinking.addEventListener("click", (e) => {
+    e.stopPropagation();
+    $toggleTrackThinking.classList.toggle("active");
+    autoTrackThinking = $toggleTrackThinking.classList.contains("active");
+    $toggleTrackThinking.setAttribute("aria-checked", String(autoTrackThinking));
+    // 立即应用到所有已有的思考内容
+    if (autoTrackThinking) {
+      document.querySelectorAll(".thinking-content").forEach((el) => {
+        el.classList.add("open");
+        (el.parentElement as HTMLElement)?.classList.add("expanded");
+        el.scrollTop = el.scrollHeight;
+      });
     }
   });
 

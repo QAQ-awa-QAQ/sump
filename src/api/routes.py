@@ -13,15 +13,24 @@ from sump.config import Config
 router = APIRouter(prefix="/api")
 config = Config()
 
-# ---- 全局 Agent ----
-_agent: Agent | None = None
+# ---- Agent 实例池（按 session_id 隔离，避免并发串扰）----
+_session_agents: dict[str, Agent] = {}
 
 
-def _get_agent() -> Agent:
-    global _agent
-    if _agent is None:
-        _agent = Agent(config)
-    return _agent
+def _get_agent(session_id: str) -> Agent:
+    """获取或创建 session 对应的 Agent 实例。"""
+    if session_id not in _session_agents:
+        agent = Agent(config)
+        agent.switch_session(session_id)
+        _session_agents[session_id] = agent
+    return _session_agents[session_id]
+
+
+def _any_agent() -> Agent:
+    """获取任意 Agent 实例（仅用于跨 session 的 memory 查询操作）。"""
+    if _session_agents:
+        return next(iter(_session_agents.values()))
+    return Agent(config)
 
 
 # ---- 请求体模型 ----
@@ -40,54 +49,64 @@ class UpdateSettingsRequest(BaseModel):
     reasoning_effort: str | None = None
     thinking_enabled: bool | None = None
 
+class RenameSessionRequest(BaseModel):
+    name: str
+
 # ---- 会话管理（统一走 Agent 持久化） ----
 
 @router.post("/sessions")
 async def create_session(body: CreateSessionRequest):
-    agent = _get_agent()
+    # 先创建 session_id，再初始化对应 Agent 实例
+    agent = Agent(config)
     sid = agent.new_session()
+    _session_agents[sid] = agent
     return {"id": sid}
 
 
 @router.get("/sessions")
 async def list_sessions():
-    agent = _get_agent()
-    return agent.memory.list_sessions()
+    return _any_agent().memory.list_sessions()
 
 
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: str):
-    agent = _get_agent()
-    msgs = agent.memory.load_messages(session_id)
+    msgs = _any_agent().memory.load_messages(session_id)
     return {"id": session_id, "messages": msgs}
 
 
 @router.post("/sessions/{session_id}/activate")
 async def activate_session(session_id: str):
-    agent = _get_agent()
+    agent = _get_agent(session_id)
     msgs = agent.memory.load_messages(session_id)
-    agent.switch_session(session_id)
     return {"id": session_id, "message_count": len(msgs)}
 
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
-    agent = _get_agent()
-    if not agent.memory.delete_session(session_id):
+    if not _any_agent().memory.delete_session(session_id):
         raise HTTPException(404, "会话不存在")
-    if agent.session_id == session_id:
+    # 清理实例池
+    agent = _session_agents.pop(session_id, None)
+    if agent and agent.session_id == session_id:
         agent.switch_session("default")
     return {"ok": True}
+
+
+@router.put("/sessions/{session_id}")
+async def rename_session(session_id: str, body: RenameSessionRequest):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "会话名不能为空")
+    _any_agent().memory.upsert_session_name(session_id, name[:50])
+    return {"ok": True, "name": name[:50]}
 
 
 # ---- 对话（流式 SSE） ----
 
 @router.post("/chat/{session_id}")
 async def chat(session_id: str, body: ChatRequest):
-    agent = _get_agent()
-    # 确保 Agent 在正确的会话上
-    if agent.session_id != session_id:
-        agent.switch_session(session_id)
+    agent = _get_agent(session_id)
+    # 每个 session 有独立 Agent，无需 switch_session
     agent.llm._backend._model = body.model
     agent.llm._backend._reasoning_effort = body.reasoning_effort
     agent.llm._backend._thinking_enabled = body.thinking_enabled
@@ -102,9 +121,24 @@ async def chat(session_id: str, body: ChatRequest):
                     data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
                     yield f"data: {data}\n\n"
             else:
+                # ── 会话命名：首条消息即写入初始名称 ──
+                is_first = len(agent.memory.load_messages(session_id, limit=1)) == 0
+                if is_first:
+                    initial_name = body.message[:50]
+                    agent.memory.upsert_session_name(session_id, initial_name)
+                    yield f"data: {json.dumps({'type': 'session_name', 'session_id': session_id, 'name': initial_name}, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
                 async for event in agent.run_stream(body.message):
                     data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
                     yield f"data: {data}\n\n"
+
+                # ── 首轮对话完成后：flash 模型总结标题并覆盖 ──
+                if is_first:
+                    title = await _summarize_title(agent, body.message)
+                    if title:
+                        agent.memory.upsert_session_name(session_id, title)
+                        yield f"data: {json.dumps({'type': 'session_name', 'session_id': session_id, 'name': title}, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
             yield "data: [DONE]\n\n"
         except Exception as e:
             err = json.dumps({"type": "error", "text": str(e)}, ensure_ascii=False, separators=(",", ":"))
@@ -119,6 +153,47 @@ async def chat(session_id: str, body: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---- Flash 标题总结 ----
+
+async def _summarize_title(agent: Agent, user_input: str) -> str:
+    """用 flash 模型（无思考）对首轮对话总结一个短标题。"""
+    try:
+        # 取最后一条 assistant 消息作为回复
+        reply = ""
+        for m in reversed(agent.ctx.messages):
+            if m.role == "assistant" and m.content:
+                reply = m.content
+                break
+
+        prompt = (
+            "请用10个字以内的简短中文标题概括以下对话主题，"
+            "只输出标题本身，不要任何其他内容、标点或解释。\n\n"
+            f"用户：{user_input[:200]}\n"
+            f"助手：{reply[:300]}"
+        )
+
+        import os
+        from openai import AsyncOpenAI
+        api_key = agent.config.get("deepseek.api_key") or os.getenv("DEEPSEEK_API_KEY", "")
+        base_url = agent.config.get("deepseek.base_url", "https://api.deepseek.com")
+        flash_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+        response = await flash_client.chat.completions.create(
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=32,
+            temperature=0.3,
+            extra_body={"thinking": {"type": "disabled"}},
+        )
+        title = (response.choices[0].message.content or "").strip()
+        # 清理：去掉引号、书名号等
+        for ch in "\"'""''《》「」":
+            title = title.replace(ch, "")
+        return title[:20] if title else ""
+    except Exception:
+        return ""
 
 
 # ---- 模型列表 ----
@@ -140,6 +215,9 @@ class ApproveRequest(BaseModel):
 
 @router.post("/tools/approve")
 async def approve_tool(body: ApproveRequest):
-    agent = _get_agent()
-    result = await agent.approve_command(body.call_id, body.approved)
-    return {"result": result[:500], "continue": True}
+    # 按 call_id 定位所属 session 的 Agent 实例
+    for session_id, agent in _session_agents.items():
+        if agent.lookup_pending_call(body.call_id):
+            result = await agent.approve_command(body.call_id, body.approved)
+            return {"result": result[:500], "continue": True}
+    raise HTTPException(404, "审批请求已过期或不存在")

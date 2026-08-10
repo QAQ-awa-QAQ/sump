@@ -25,6 +25,7 @@ class Message(BaseModel):
     content: str
     tool_call_id: str = ""
     tool_calls: list[dict[str, Any]] | None = None
+    reasoning_content: str = ""
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
