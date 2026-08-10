@@ -2,6 +2,8 @@
 
 > **状态：开发中 | 版本 v0.1.5**
 
+集水器 · 汇聚万家之长 / The Sump — where diverse agentic paradigms converge.
+
 SUMP 不是又一个"Agent 框架"。它是一个**以人体生理机制为蓝本的智能体运行时**。
 
 ## 核心哲学
