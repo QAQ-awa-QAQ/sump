@@ -8,14 +8,14 @@ from sump.memory.base import MemoryProvider
 class TaskMemory(MemoryProvider):
     """任务级记忆，随会话生命周期管理"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._tasks: dict[str, Any] = {}
         self._scratchpad: dict[str, Any] = {}
 
-    async def store(self, key: str, value: Any, **kwargs) -> None:
+    async def store(self, key: str, value: Any, **kwargs: Any) -> None:
         self._tasks[key] = value
 
-    async def retrieve(self, key: str, **kwargs) -> Any | None:
+    async def retrieve(self, key: str, **kwargs: Any) -> Any | None:
         return self._tasks.get(key)
 
     async def forget(self, key: str) -> None:

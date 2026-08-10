@@ -1,10 +1,12 @@
 """内部自评"""
 
+from typing import Any
+
 
 class InternalEvaluator:
     """Agent 内部自评估"""
 
-    async def evaluate(self, task: str, result: str) -> dict:
+    async def evaluate(self, task: str, result: str) -> dict[str, Any]:
         """评估自身输出质量
 
         Returns:

@@ -1,9 +1,8 @@
 # SUMP 默认配置
 agent:
   name: "SUMP"
-  model: "gpt-4o"
-  max_rounds: 50
-  temperature: 0.7
+  max_rounds: 10                       # 工具调用最大轮次
+  context_window: 50                    # 上下文窗口消息数
 
 memory:
   working:
@@ -25,9 +24,8 @@ deepseek:
   thinking_enabled: false               # 是否启用思维链推理（默认关闭，按需开启）
   max_tokens: 4096
   temperature: 1.0                      # 仅在 thinking_enabled=false 时生效
-
-security:
-  notify_safe: true                    # true=安全命令也推送通知事件给前端
+  max_retries: 3                        # API 调用失败最大重试次数
+  retry_delay: 1.0                      # 重试间隔（秒），指数退避
 
 tools:
   builtin:
@@ -52,6 +50,7 @@ security:
   judge:
     enabled: true
     threshold: 0.5
+  notify_safe: true                    # true=安全命令也推送通知事件给前端
 
 debug:
   log_level: "INFO"

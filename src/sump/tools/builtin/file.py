@@ -17,5 +17,5 @@ class FileTool(Tool):
         "required": ["action", "path"],
     }
 
-    async def execute(self, **kwargs) -> Any:
+    async def execute(self, **kwargs: Any) -> Any:
         pass

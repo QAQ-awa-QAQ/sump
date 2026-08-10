@@ -8,11 +8,11 @@ class MemoryProvider(ABC):
     """所有记忆后端的抽象基类"""
 
     @abstractmethod
-    async def store(self, key: str, value: Any, **kwargs) -> None:
+    async def store(self, key: str, value: Any, **kwargs: Any) -> None:
         """存储记忆"""
 
     @abstractmethod
-    async def retrieve(self, key: str, **kwargs) -> Any | None:
+    async def retrieve(self, key: str, **kwargs: Any) -> Any | None:
         """检索记忆"""
 
     @abstractmethod

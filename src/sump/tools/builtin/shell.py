@@ -27,7 +27,7 @@ class ShellTool(Tool):
         "required": ["command"],
     }
 
-    async def execute(self, command: str = "", **kwargs: Any) -> str:  # type: ignore[override]
+    async def execute(self, command: str = "", **kwargs: Any) -> str:
         """执行命令，返回 stdout + stderr（截断至 4000 字符）。"""
         encoding = _detect_encoding()
         try:

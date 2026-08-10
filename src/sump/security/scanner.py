@@ -1,10 +1,12 @@
 """扫描器（内容安全）"""
 
+from typing import Any
+
 
 class Scanner:
     """内容安全扫描"""
 
-    def scan(self, content: str) -> dict:
+    def scan(self, content: str) -> dict[str, Any]:
         """扫描内容安全性
 
         Returns:

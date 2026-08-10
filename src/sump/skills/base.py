@@ -14,7 +14,7 @@ class Skill(ABC):
     proficiency: SkillProficiency = SkillProficiency.INITIAL
 
     @abstractmethod
-    async def execute(self, **kwargs) -> Any:
+    async def execute(self, **kwargs: Any) -> Any:
         """执行技能"""
 
     def to_prompt(self) -> str:

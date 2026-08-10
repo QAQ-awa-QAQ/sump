@@ -115,9 +115,8 @@ async def chat(session_id: str, body: ChatRequest):
         try:
             if body.message == "__continue__":
                 # 审批后自动延续——不添加用户消息，直接让 LLM 继续
-                agent._is_continue = True
                 yield "data: {\"type\":\"continue\",\"text\":\"审批完成，继续对话\"}\n\n"
-                async for event in agent._run_core():
+                async for event in agent.run_core():
                     data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
                     yield f"data: {data}\n\n"
             else:

@@ -16,5 +16,5 @@ class SearchTool(Tool):
         "required": ["query"],
     }
 
-    async def execute(self, **kwargs) -> Any:
+    async def execute(self, **kwargs: Any) -> Any:
         pass

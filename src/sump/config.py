@@ -23,7 +23,7 @@ class Config:
                 with open(path, encoding="utf-8") as f:
                     self._deep_merge(self._data, yaml.safe_load(f) or {})
 
-    def _deep_merge(self, base: dict, override: dict) -> None:
+    def _deep_merge(self, base: dict[str, Any], override: dict[str, Any]) -> None:
         for key, value in override.items():
             if key in base and isinstance(base[key], dict) and isinstance(value, dict):
                 self._deep_merge(base[key], value)

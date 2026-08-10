@@ -14,5 +14,5 @@ class DateTimeTool(Tool):
         "properties": {},
     }
 
-    async def execute(self, **kwargs) -> Any:
+    async def execute(self, **kwargs: Any) -> Any:
         return datetime.now(timezone.utc).isoformat()

@@ -6,7 +6,7 @@ from sump.skills.base import Skill
 class SkillManager:
     """技能注册与发现"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._skills: dict[str, Skill] = {}
 
     def register(self, skill: Skill) -> None:

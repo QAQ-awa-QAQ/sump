@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sump"
-version = "0.1.0"
+version = "0.2.0"
 description = "Smart Unified Memory & Platform - Agent runtime framework"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -44,9 +44,13 @@ select = ["E", "F", "I", "N", "W"]
 
 [tool.mypy]
 python_version = "3.12"
-strict = false
+strict = true
 warn_return_any = true
 warn_unused_configs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "yaml"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

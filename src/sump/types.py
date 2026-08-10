@@ -33,7 +33,7 @@ class MemoryEntry(BaseModel):
     id: str
     type: MemoryType
     content: Any
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.now)
 
 

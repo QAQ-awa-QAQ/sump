@@ -17,5 +17,5 @@ class WebTool(Tool):
         "required": ["url"],
     }
 
-    async def execute(self, **kwargs) -> Any:
+    async def execute(self, **kwargs: Any) -> Any:
         pass

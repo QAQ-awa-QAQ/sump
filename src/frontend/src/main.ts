@@ -2,28 +2,17 @@
    SUMP Studio — Main Entry
    ============================================================ */
 
-import { marked } from "marked";
-import { markedHighlight } from "marked-highlight";
-import hljs from "highlight.js";
 import "highlight.js/styles/github.css";
-
-// 配置 marked + highlight.js
-marked.use(
-  markedHighlight({
-    langPrefix: "hljs language-",
-    highlight(code: string, lang: string) {
-      if (lang && hljs.getLanguage(lang)) {
-        return hljs.highlight(code, { language: lang }).value;
-      }
-      return hljs.highlightAuto(code).value;
-    },
-  }),
-);
-
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-});
+import {
+  escapeHtml,
+  renderMarkdown,
+  buildUserBubble,
+  buildAssistantContainer,
+  buildToolCall,
+  buildToolResult,
+  buildThinkingIndicator,
+  buildSecurityInfo,
+} from "./renderer";
 import {
   type Session,
   type SessionSettings,
@@ -220,12 +209,6 @@ async function handleNewSession() {
   $inputMessage.focus();
 }
 
-function escapeHtml(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
-}
-
 async function loadSession(id: string) {
   try {
     await activateSession(id);
@@ -277,7 +260,7 @@ async function loadSession(id: string) {
         if (msg.content) {
           const c = document.createElement("div");
           c.className = "assistant-content";
-          c.innerHTML = marked.parse(msg.content) as string;
+          c.innerHTML = renderMarkdown(msg.content);
           mc.appendChild(c);
         }
         currentAssistantEl = el;
@@ -501,7 +484,7 @@ async function handleSend() {
             assistantEl.querySelector(".msg-content")!.appendChild(contentEl);
           }
           rawContent += chunk.text;
-          contentEl.innerHTML = marked.parse(rawContent) as string;
+          contentEl.innerHTML = renderMarkdown(rawContent);
           scrollToBottom();
           break;
 

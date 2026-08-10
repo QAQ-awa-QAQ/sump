@@ -9,13 +9,13 @@ class Tool(ABC):
 
     name: str = ""
     description: str = ""
-    parameters: dict = {}
+    parameters: dict[str, Any] = {}
 
     @abstractmethod
-    async def execute(self, **kwargs) -> Any:
+    async def execute(self, **kwargs: Any) -> Any:
         """执行工具"""
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> dict[str, Any]:
         """转换为 OpenAI function-calling 格式"""
         return {
             "type": "function",
