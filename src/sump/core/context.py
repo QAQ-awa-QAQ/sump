@@ -33,8 +33,9 @@ class Context:
 
     @property
     def history(self) -> list[dict[str, Any]]:
+        window = int(self.config.get("agent.context_window", 50))
         result: list[dict[str, Any]] = []
-        for m in self.messages[-50:]:
+        for m in self.messages[-window:]:
             entry: dict[str, Any] = {"role": m.role}
             if m.tool_calls:
                 entry["tool_calls"] = m.tool_calls

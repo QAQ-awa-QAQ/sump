@@ -1,9 +1,11 @@
+"""对外事件流（SUMPAPI，兼容保留）"""
+
 from collections.abc import Callable
 from typing import Any
 
 
 class SUMPAPI:
-    """对外暴露的 API 接口"""
+    """对外暴露的事件流接口"""
 
     def __init__(self) -> None:
         self._listeners: list[Callable[..., Any]] = []

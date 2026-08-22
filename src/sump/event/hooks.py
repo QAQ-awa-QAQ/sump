@@ -1,11 +1,12 @@
-"""钩子系统（事件监听）"""
+"""钩子系统（轻量广播，兼容保留）"""
 
+import inspect
 from collections import defaultdict
 from typing import Any, Callable
 
 
 class HookSystem:
-    """事件钩子系统"""
+    """事件钩子系统（无记账的轻量广播）。"""
 
     def __init__(self) -> None:
         self._hooks: dict[str, list[Callable[..., Any]]] = defaultdict(list)
@@ -18,8 +19,8 @@ class HookSystem:
         """触发事件"""
         results = []
         for callback in self._hooks.get(event, []):
-            if hasattr(callback, "__await__"):
-                results.append(await callback(**kwargs))
-            else:
-                results.append(callback(**kwargs))
+            result = callback(**kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            results.append(result)
         return results

@@ -3,6 +3,7 @@ agent:
   name: "SUMP"
   max_rounds: 10                       # 工具调用最大轮次
   context_window: 50                    # 上下文窗口消息数
+  inject_reasoning: false               # 恢复历史会话时是否注入推理内容（默认不注入，节省 token）
 
 memory:
   working:
@@ -56,3 +57,13 @@ debug:
   log_level: "INFO"
   trace_enabled: false
   key_output_enabled: true
+
+sleep:
+  enabled: true                        # 是否启用睡眠生理机制
+  window: ["02:00", "07:00"]           # 可进入睡眠的时间段 [开始, 结束]（HH:MM，支持跨午夜）
+  idle_minutes: 30                     # 距上次本体调用的空闲分钟数阈值
+  deepen_after_seconds: 300            # 浅睡持续多少秒后进入深睡（开始记忆整理）
+  tick_interval_seconds: 10            # 后台生理节拍检查间隔（秒）
+
+events:
+  db_path: "data/event.db"             # 事件存档数据库（append-only，暂不删除）

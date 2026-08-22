@@ -83,12 +83,16 @@ class Agent:
                     valid.append(e)
             else:
                 valid.append(e)
+        inject_reasoning = bool(self.config.get("agent.inject_reasoning", False))
         for entry in valid:
             self.ctx.messages.append(Message(
                 role=entry["role"],
                 content=entry["content"],
                 tool_call_id=entry.get("tool_call_id", ""),
                 tool_calls=entry.get("tool_calls"),
+                reasoning_content=(
+                    entry.get("reasoning_content", "") if inject_reasoning else ""
+                ),
             ))
 
     @property

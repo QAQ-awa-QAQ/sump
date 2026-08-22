@@ -58,14 +58,14 @@ class ShallowMemory:
             rows = db.execute(
                 "SELECT role, content, tool_call_id, tool_calls, reasoning_content "
                 "FROM messages WHERE session_id = ? "
-                "ORDER BY id ASC LIMIT ?",
+                "ORDER BY id DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
         finally:
             db.close()
 
         result: list[dict[str, Any]] = []
-        for role, content, tci, tcs, reasoning in rows:
+        for role, content, tci, tcs, reasoning in reversed(rows):
             entry: dict[str, Any] = {"role": role, "content": content}
             if tci:
                 entry["tool_call_id"] = tci
