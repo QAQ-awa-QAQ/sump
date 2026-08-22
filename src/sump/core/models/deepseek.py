@@ -122,6 +122,25 @@ class DeepSeekClient:
         result = await self.chat(messages)
         return str(result["content"])
 
+    async def chat_flash(
+        self, text: str, *, max_tokens: int = 256, temperature: float = 0.3
+    ) -> str:
+        """轻量快速调用：独立会话 + flash 模型 + 不思考，文字进文字出。"""
+        kwargs: dict[str, Any] = {
+            "model": "deepseek-v4-flash",
+            "messages": [{"role": "user", "content": text}],
+            "stream": False,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
+
+        async def _call() -> str:
+            response = await self._client.chat.completions.create(**kwargs)
+            return response.choices[0].message.content or ""
+
+        return await self._retry_call(_call, "DeepSeek flash")  # type: ignore[no-any-return]
+
     async def chat_stream(
         self, messages: list[dict[str, Any]]
     ) -> AsyncGenerator[dict[str, Any], None]:

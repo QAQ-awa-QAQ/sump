@@ -9,7 +9,7 @@ from sump.core.context import Context
 from sump.core.executor import Executor
 from sump.core.models import LLMClient
 from sump.core.planner import Planner
-from sump.memory.shallow import ShallowMemory
+from sump.memory.session_memory import SessionMemory
 from sump.tools.builtin.shell import ShellTool
 from sump.tools.registry import ToolRegistry
 from sump.types import Message
@@ -26,7 +26,7 @@ class Agent:
 
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or Config()
-        self.memory = ShallowMemory(self.config.get("memory.shallow.db_path", "data/memory.db"))
+        self.memory = SessionMemory(self.config.get("memory.session.db_path", "data/memory.db"))
         self.ctx = Context(self.config)
         self.llm = LLMClient(self.config)
         self.tools = ToolRegistry()

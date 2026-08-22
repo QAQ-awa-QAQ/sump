@@ -46,7 +46,7 @@ graph TD
     A -->|实例化| CTX[core/context.py<br/>Context]
     A -->|实例化| LLM[core/models/__init__.py<br/>LLMClient]
     A -->|实例化| REG[tools/registry.py<br/>ToolRegistry]
-    A -->|实例化| MEM[memory/shallow.py<br/>ShallowMemory]
+    A -->|实例化| MEM[memory/session_memory.py<br/>SessionMemory]
     A -->|委托| PL[core/planner.py<br/>Planner]
     A -->|委托| EX[core/executor.py<br/>Executor]
 
@@ -127,7 +127,7 @@ Vite + TypeScript SPA (src/frontend/)
 
 | 方法 | 调用 | 被谁调用 |
 |------|------|----------|
-| `__init__(config?)` | Config → Context → LLMClient → ToolRegistry → ShallowMemory → Planner → Executor → `_load_session()` | 外部实例化 |
+| `__init__(config?)` | Config → Context → LLMClient → ToolRegistry → SessionMemory → Planner → Executor → `_load_session()` | 外部实例化 |
 | `run_stream(user_input)` | `ctx.add_user_message()` → `planner.plan()` → `executor.execute(plan)` → yield event | CLI / API |
 | `run_core()` | `planner.plan()` → `executor.execute(plan)` → yield event | API `__continue__` |
 | `approve_command(id, approved)` | `_pending_approvals` → 执行/拒绝 → 替换上下文 | API `/tools/approve` |
@@ -203,12 +203,13 @@ Vite + TypeScript SPA (src/frontend/)
 | 类 | 状态 | 核心方法 |
 |----|------|----------|
 | `MemoryProvider` (ABC) | ✅ | `store / retrieve / forget / clear` |
-| `WorkingMemory` | ✅ | LRU + OrderedDict 实现 |
-| `ShallowMemory` | ✅ | SQLite 完整实现（save / load / list / delete / upsert_session_name / update_tool_message） |
+| `WorkingMemory` | ✅ | 任务便签（目标 + 过程记录，内存/SQLite 双后端 + 字节上限） |
+| `SessionMemory` | ✅ | SQLite 完整实现（save / load / list / delete / count / delete_oldest / upsert_session_name / update_tool_message） |
+| `ShallowMemory` | ✅ | SQLite 分类条目（情景/语义/工作流/error） |
 | `DeepMemory` | ✅ | SQLite 持久化 + 纯 Python 余弦相似度语义检索 + 按分类查询 |
 | `TaskMemory` | ✅ | 会话级 + scratchpad 便签 |
 | `SoulLoader` | ✅ | SOUL.md 文件加载 |
-| `MemoryCompressor` | ⚠️ | Working → Shallow 压缩（桩） |
+| `MemoryCompressor` | ⚠️ | 会话记忆压缩（超阈值丢弃一半，flash 评估待实现） |
 
 ---
 

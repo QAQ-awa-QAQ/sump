@@ -7,13 +7,16 @@ agent:
 
 memory:
   working:
-    max_items: 100
-    ttl_seconds: 600
-  shallow:
-    db_path: "data/memory.db"
+    backend: "disk"                # memory / disk（默认磁盘）
+    max_bytes: 102400              # 容量上限（字节）
+    db_path: "data/working.db"     # disk 后端时的数据库
+  session:
+    db_path: "data/session.db"
     max_episodes: 10000
+  shallow:
+    db_path: "data/shallow.db"
   deep:
-    db_path: "data/memory.db"
+    db_path: "data/deep.db"
     embedding_model: "text-embedding-3-small"
     top_k: 10
 

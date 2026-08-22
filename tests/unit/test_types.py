@@ -6,7 +6,10 @@ from sump.types import MemoryType, Message, MemoryEntry
 class TestMemoryType:
     def test_enum_values(self):
         assert MemoryType.WORKING == "working"
+        assert MemoryType.SESSION == "session"
         assert MemoryType.SHALLOW == "shallow"
+        assert MemoryType.DEEP == "deep"
+        assert MemoryType.TASK == "task"
 
 
 class TestMessage:
@@ -18,6 +21,6 @@ class TestMessage:
 
 class TestMemoryEntry:
     def test_create_entry(self):
-        entry = MemoryEntry(id="1", type=MemoryType.WORKING, content="test")
+        entry = MemoryEntry(id="1", type=MemoryType.SESSION, content="test")
         assert entry.id == "1"
-        assert entry.type == MemoryType.WORKING
+        assert entry.type == MemoryType.SESSION

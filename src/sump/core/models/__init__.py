@@ -17,6 +17,14 @@ class LLMClient:
         """发送对话请求，返回文本回复。"""
         return await self._backend.chat_text(messages)
 
+    async def chat_flash(
+        self, text: str, *, max_tokens: int = 256, temperature: float = 0.3
+    ) -> str:
+        """轻量快速调用：独立会话 + flash 模型 + 不思考，文字进文字出。"""
+        return await self._backend.chat_flash(
+            text, max_tokens=max_tokens, temperature=temperature
+        )
+
     async def chat_full(
         self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None = None
     ) -> dict[str, Any]:

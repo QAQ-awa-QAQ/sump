@@ -173,20 +173,7 @@ async def _summarize_title(agent: Agent, user_input: str) -> str:
             f"助手：{reply[:300]}"
         )
 
-        import os
-        from openai import AsyncOpenAI
-        api_key = agent.config.get("deepseek.api_key") or os.getenv("DEEPSEEK_API_KEY", "")
-        base_url = agent.config.get("deepseek.base_url", "https://api.deepseek.com")
-        flash_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-
-        response = await flash_client.chat.completions.create(
-            model="deepseek-v4-flash",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=32,
-            temperature=0.3,
-            extra_body={"thinking": {"type": "disabled"}},
-        )
-        title = (response.choices[0].message.content or "").strip()
+        title = (await agent.llm.chat_flash(prompt, max_tokens=32, temperature=0.3)).strip()
         # 清理：去掉引号、书名号等
         for ch in "\"'""''《》「」":
             title = title.replace(ch, "")

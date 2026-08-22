@@ -67,15 +67,18 @@ class TestAgentRunStream:
         assert len(sid) == 8
         assert agent.session_id == sid
 
+        # 写入一条消息（触发持久化）
+        agent.ctx.add_user_message("hello")
+
         # 切换会话
         sid2 = agent.new_session()
         assert sid2 != sid
         assert agent.session_id == sid2
 
-        # default 会话始终存在
+        # 有消息的会话应出现在列表中
         sessions = agent.memory.list_sessions()
         sids = [s["id"] for s in sessions]
-        assert "default" in sids
+        assert sid in sids
 
 
 class TestAgentSecurity:

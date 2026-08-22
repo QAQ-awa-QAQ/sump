@@ -97,7 +97,7 @@ class Judge:
             '{{"summary":"一句话描述命令意图(中文)","danger":"low|medium|high|critical","verdict":"safe|risky","concerns":["关切1"]}}'
         )
         try:
-            result = await llm.chat([{"role": "user", "content": prompt}])
+            result = await llm.chat_flash(prompt)
             import json
             data = json.loads(result.strip().removeprefix("```json").removesuffix("```").strip())
             return Verdict(

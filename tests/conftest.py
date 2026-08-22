@@ -16,8 +16,19 @@ from sump.tools.registry import ToolRegistry
 
 
 @pytest.fixture
-def config() -> Config:
-    return Config()
+def config(tmp_path) -> Config:
+    cfg = Config()
+    # 隔离数据库路径，避免测试污染项目 data/ 目录
+    memory = cfg._data.setdefault("memory", {})
+    for key, filename in (
+        ("session", "session.db"),
+        ("shallow", "shallow.db"),
+        ("deep", "deep.db"),
+        ("working", "working.db"),
+    ):
+        node = memory.setdefault(key, {})
+        node["db_path"] = str(tmp_path / filename)
+    return cfg
 
 
 @pytest.fixture

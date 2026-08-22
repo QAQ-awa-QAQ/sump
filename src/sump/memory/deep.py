@@ -19,7 +19,7 @@ class DeepMemory(MemoryProvider):
 
     使用方式::
 
-        deep = DeepMemory("data/memory.db")
+        deep = DeepMemory("data/deep.db")
         await deep.store("event_1", "用户要求删除生产数据库",
                           embedding=[0.1, 0.2, ...], category="关键事件")
         results = await deep.search("数据库删除操作", top_k=5)
@@ -27,7 +27,7 @@ class DeepMemory(MemoryProvider):
 
     def __init__(
         self,
-        db_path: str = "data/memory.db",
+        db_path: str = "data/deep.db",
         embedding_model: str = "text-embedding-3-small",
     ) -> None:
         self.db_path = db_path

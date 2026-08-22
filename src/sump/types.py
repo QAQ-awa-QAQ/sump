@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 class MemoryType(str, Enum):
     WORKING = "working"
+    SESSION = "session"
     SHALLOW = "shallow"
     DEEP = "deep"
     TASK = "task"
