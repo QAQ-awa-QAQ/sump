@@ -16,6 +16,10 @@ class Context:
     messages: list[Message] = field(default_factory=list)
     round_count: int = 0
     on_message: Callable[[Message], None] | None = None
+    system_prompt: str = ""
+
+    def set_system_prompt(self, prompt: str) -> None:
+        self.system_prompt = prompt
 
     def add_user_message(self, content: str) -> None:
         self._append(Message(role="user", content=content))
@@ -35,6 +39,8 @@ class Context:
     def history(self) -> list[dict[str, Any]]:
         window = int(self.config.get("agent.context_window", 50))
         result: list[dict[str, Any]] = []
+        if self.system_prompt:
+            result.append({"role": "system", "content": self.system_prompt})
         for m in self.messages[-window:]:
             entry: dict[str, Any] = {"role": m.role}
             if m.tool_calls:

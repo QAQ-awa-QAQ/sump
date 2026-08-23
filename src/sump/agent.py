@@ -9,7 +9,11 @@ from sump.core.context import Context
 from sump.core.executor import Executor
 from sump.core.models import LLMClient
 from sump.core.planner import Planner
+from sump.memory.deep import DeepMemory
+from sump.memory.persona import PersonaManager
+from sump.memory.retriever import MemoryRetriever
 from sump.memory.session_memory import SessionMemory
+from sump.memory.shallow import ShallowMemory
 from sump.tools.builtin.shell import ShellTool
 from sump.tools.registry import ToolRegistry
 from sump.types import Message
@@ -24,7 +28,9 @@ class Agent:
             # event: {type, ...} -> CLI 渲染 ANSI / API 渲染 SSE
     """
 
-    def __init__(self, config: Config | None = None) -> None:
+    def __init__(
+        self, config: Config | None = None, deep_embedder: Any = None
+    ) -> None:
         self.config = config or Config()
         self.memory = SessionMemory(self.config.get("memory.session.db_path", "data/memory.db"))
         self.ctx = Context(self.config)
@@ -32,6 +38,25 @@ class Agent:
         self.tools = ToolRegistry()
         self.tools.register(ShellTool())
         self._session_id = "default"
+
+        self.persona = PersonaManager(
+            files=self.config.get("memory.soul.files", None),
+            max_bytes=int(self.config.get("memory.soul.max_bytes", 5000)),
+        )
+        self.shallow_memory = ShallowMemory(
+            self.config.get("memory.shallow.db_path", "data/shallow.db")
+        )
+        self.deep_memory = DeepMemory(
+            self.config.get("memory.deep.db_path", "data/deep.db"),
+            embedder=deep_embedder,
+            embedder_cache_dir=self.config.get("memory.deep.embedding_cache", None),
+        )
+        self.retriever = MemoryRetriever(
+            self.deep_memory, self.shallow_memory,
+            max_results=int(self.config.get("memory.recall.max_results", 5)),
+            max_chars=int(self.config.get("memory.recall.max_chars", 800)),
+            timeout=float(self.config.get("memory.recall.timeout", 3.0)),
+        )
 
         self.ctx.on_message = self._persist_message
         self._load_session(self._session_id)
@@ -166,7 +191,8 @@ class Agent:
     async def run_stream(
         self, user_input: str
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """执行一轮对话。流程: 用户消息入上下文 -> Planner 计划 -> Executor 执行。"""
+        """执行一轮对话。流程: 注入人格与记忆 -> 用户消息 -> Planner -> Executor。"""
+        await self._inject_context(user_input)
         self.ctx.add_user_message(user_input)
 
         plan = await self._planner.plan(
@@ -179,12 +205,27 @@ class Agent:
 
     async def run_core(self) -> AsyncGenerator[dict[str, Any], None]:
         """延续执行（审批后 __continue__），不添加用户消息。"""
+        await self._inject_context(self._last_user_message())
         plan = await self._planner.plan(
             tools_available=len(self.tools.list_all()),
             max_rounds=self._max_rounds,
         )
         async for event in self._executor.execute(plan):
             yield event
+
+    async def _inject_context(self, user_input: str) -> None:
+        """注入人格 + 召回记忆作为 system prompt。"""
+        prompt = self.persona.get_system_prompt()
+        recall = await self.retriever.recall(user_input)
+        if recall:
+            prompt = f"{prompt}\n\n{recall}" if prompt else recall
+        self.ctx.set_system_prompt(prompt)
+
+    def _last_user_message(self) -> str:
+        for m in reversed(self.ctx.messages):
+            if m.role == "user":
+                return m.content
+        return ""
 
     # ------------------------------------------------------------------
     # 记忆持久化

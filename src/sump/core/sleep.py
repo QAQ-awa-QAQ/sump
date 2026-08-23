@@ -15,6 +15,7 @@ from datetime import datetime, time as dtime
 from enum import Enum
 
 from sump.config import Config
+from sump.core.models import LLMClient
 from sump.event import SleepEvents, get_event_bus
 from sump.tools.builtin.memory_consolidation import MemoryConsolidationTool
 
@@ -55,7 +56,7 @@ class SleepManager:
         self._consolidated = False
         self._tick_task: asyncio.Task[None] | None = None
         self._consolidate_task: asyncio.Task[None] | None = None
-        self._tool = MemoryConsolidationTool()
+        self._tool = MemoryConsolidationTool(self.config, LLMClient(self.config))
 
     # ------------------------------------------------------------------
     # 对外接口

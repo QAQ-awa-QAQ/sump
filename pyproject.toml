@@ -21,6 +21,8 @@ dependencies = [
     "openai>=1.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
+    "numpy>=1.24",
+    "fastembed>=0.3",
 ]
 
 [project.optional-dependencies]
@@ -31,9 +33,7 @@ dev = [
     "ruff>=0.1",
     "mypy>=1.0",
 ]
-mem0 = ["mem0ai>=0.1"]
-zep = ["zep-python>=1.0"]
-all = ["sump[dev,mem0,zep]"]
+all = ["sump[dev]"]
 
 [tool.ruff]
 line-length = 100

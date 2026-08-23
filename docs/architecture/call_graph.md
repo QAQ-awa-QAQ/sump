@@ -1,6 +1,6 @@
 # SUMP 函数调用关系图
 
-> 版本: v0.2.0 | 更新: 2026-08-10
+> 版本: v0.2.0 | 更新: 2026-08-23
 
 ---
 
@@ -47,6 +47,10 @@ graph TD
     A -->|实例化| LLM[core/models/__init__.py<br/>LLMClient]
     A -->|实例化| REG[tools/registry.py<br/>ToolRegistry]
     A -->|实例化| MEM[memory/session_memory.py<br/>SessionMemory]
+    A -->|实例化| PSN[memory/persona.py<br/>PersonaManager]
+    A -->|实例化| SHM[memory/shallow.py<br/>ShallowMemory]
+    A -->|实例化| DPM[memory/deep.py<br/>DeepMemory]
+    A -->|实例化| RTR[memory/retriever.py<br/>MemoryRetriever]
     A -->|委托| PL[core/planner.py<br/>Planner]
     A -->|委托| EX[core/executor.py<br/>Executor]
 
@@ -66,6 +70,14 @@ graph TD
 
     REG -->|注册| ST[tools/builtin/shell.py<br/>ShellTool]
     REG -->|扩展| MCP[tools/mcp/client.py<br/>MCPClient]
+
+    SLPM[core/sleep.py<br/>SleepManager] -->|深睡触发| CONS[tools/builtin/memory_consolidation.py<br/>MemoryConsolidationTool]
+    CONS -->|会话→浅层| SHEX[tools/builtin/shallow_extraction.py]
+    CONS -->|浅层→场景| SCAX[tools/builtin/scene_aggregation.py]
+    CONS -->|浅层→深层| DEX[tools/builtin/deep_extraction.py]
+    DEX -->|冲突检测| DDP[memory/dedup.py<br/>DeepDedup]
+    RTR -->|混合检索| DPM
+    A -->|注入系统提示| PSN
 
     CLI[CLI basic_chat.py] -->|消费事件| A
     WEB[API routes.py] -->|消费事件| A
@@ -204,12 +216,34 @@ Vite + TypeScript SPA (src/frontend/)
 |----|------|----------|
 | `MemoryProvider` (ABC) | ✅ | `store / retrieve / forget / clear` |
 | `WorkingMemory` | ✅ | 任务便签（目标 + 过程记录，内存/SQLite 双后端 + 字节上限） |
-| `SessionMemory` | ✅ | SQLite 完整实现（save / load / list / delete / count / delete_oldest / upsert_session_name / update_tool_message） |
-| `ShallowMemory` | ✅ | SQLite 分类条目（情景/语义/工作流/error） |
-| `DeepMemory` | ✅ | SQLite 持久化 + 纯 Python 余弦相似度语义检索 + 按分类查询 |
+| `SessionMemory` | ✅ | SQLite（save / load / load_all / list / delete / count / delete_oldest / upsert_session_name / update_tool_message） |
+| `ShallowMemory` | ✅ | SQLite 分类条目 + priority 打分 + 过期回收（80% 阈值） |
+| `DeepMemory` | ✅ | SQLite + priority + FTS5 BM25 + 向量余弦 RRF 混合检索 + 过期回收 |
+| `SceneMemory` | ✅ | L2 场景层（name + summary，按 priority 排序，过期回收） |
+| `ArchiveMemory` | ✅ | 历史会话归档副本（智能体不可见） |
+| `Embedder` | ✅ | 本地 embedding（fastembed + bge-small-zh，单例加载） |
+| `PersonaManager` | ✅ | SOUL.md / AGENTS.md 注入 system prompt + 睡眠精简（.bak 备份） |
+| `MemoryRetriever` | ✅ | 深层/浅层召回 + 条数/字符/超时三重上限 |
+| `DeepDedup` | ✅ | store / update / merge / skip 冲突检测 |
 | `TaskMemory` | ✅ | 会话级 + scratchpad 便签 |
-| `SoulLoader` | ✅ | SOUL.md 文件加载 |
-| `MemoryCompressor` | ⚠️ | 会话记忆压缩（超阈值丢弃一半，flash 评估待实现） |
+| `MemoryCompressor` | ⚠️ | 会话记忆压缩（flash 评估待实现） |
+
+> 睡眠巩固链路（SleepManager 深睡触发）：
+>
+> ```
+> SleepManager._run_consolidation()
+>   └─ MemoryConsolidationTool.execute()
+>        ├─ 每个会话：ShallowExtractionTool（OR 三判断 + priority 剪枝）
+>        ├─ ArchiveMemory 归档 + SessionMemory 清除
+>        ├─ SceneAggregationTool（浅层 → L2 场景块）
+>        ├─ DeepExtractionTool（AND 三判断 + priority + DeepDedup 四动作）
+>        ├─ ShallowMemory / DeepMemory / SceneMemory delete_expired（80% 阈值）
+>        └─ PersonaManager.compact（灵魂文件精简）
+>
+> 召回注入链路（每次对话）：
+> Agent._inject_context() → MemoryRetriever.recall()
+>   → DeepMemory.search（BM25 + 向量 + RRF）→ system prompt
+> ```
 
 ---
 

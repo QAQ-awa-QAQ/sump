@@ -64,6 +64,25 @@ class SessionMemory:
         finally:
             db.close()
 
+        return self._parse_rows(rows)
+
+    def load_all_messages(self, session_id: str = "default") -> list[dict[str, Any]]:
+        """加载指定会话的全部消息（按时间正序）。"""
+        db = self._conn()
+        try:
+            rows = db.execute(
+                "SELECT role, content, tool_call_id, tool_calls, reasoning_content "
+                "FROM messages WHERE session_id = ? ORDER BY id DESC",
+                (session_id,),
+            ).fetchall()
+        finally:
+            db.close()
+
+        return self._parse_rows(rows)
+
+    @staticmethod
+    def _parse_rows(rows: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
+        """把查询行（按 id 倒序）转为消息字典列表（按时间正序）。"""
         result: list[dict[str, Any]] = []
         for role, content, tci, tcs, reasoning in reversed(rows):
             entry: dict[str, Any] = {"role": role, "content": content}

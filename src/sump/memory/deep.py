@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from sump.memory.base import MemoryProvider
 
 
@@ -28,10 +30,14 @@ class DeepMemory(MemoryProvider):
     def __init__(
         self,
         db_path: str = "data/deep.db",
-        embedding_model: str = "text-embedding-3-small",
+        embedding_model: str = "BAAI/bge-small-zh-v1.5",
+        embedder: Any = None,
+        embedder_cache_dir: str | None = None,
     ) -> None:
         self.db_path = db_path
         self.embedding_model = embedding_model
+        self._embedder = embedder
+        self._embedder_cache_dir = embedder_cache_dir
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
@@ -48,11 +54,13 @@ class DeepMemory(MemoryProvider):
                     key      TEXT PRIMARY KEY,
                     value    TEXT NOT NULL,
                     category TEXT DEFAULT '',
+                    priority INTEGER NOT NULL DEFAULT 0,
                     embedding TEXT DEFAULT '',
                     metadata TEXT DEFAULT '{}',
                     created_at REAL NOT NULL
                 )
             """)
+            self._ensure_column(db, "deep_memory", "priority", "INTEGER NOT NULL DEFAULT 0")
             db.execute("""
                 CREATE INDEX IF NOT EXISTS idx_deep_category
                 ON deep_memory(category)
@@ -61,9 +69,23 @@ class DeepMemory(MemoryProvider):
                 CREATE INDEX IF NOT EXISTS idx_deep_created
                 ON deep_memory(created_at)
             """)
+            try:
+                db.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS deep_memory_fts
+                    USING fts5(key UNINDEXED, content, tokenize='trigram')
+                """)
+            except Exception:
+                pass
             db.commit()
         finally:
             db.close()
+
+    @staticmethod
+    def _ensure_column(db: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+        """旧库迁移：缺列则 ALTER TABLE 补上。"""
+        cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self._path))
@@ -82,23 +104,32 @@ class DeepMemory(MemoryProvider):
         """
         embedding = kwargs.get("embedding", [])
         category = kwargs.get("category", "")
+        priority = int(kwargs.get("priority", 0))
         meta = kwargs.get("metadata", {})
+
+        # 未显式提供向量且 value 是文本时，自动本地生成
+        if not embedding and isinstance(value, str):
+            vecs = self._embed_texts(self._get_embedder(), [value])
+            if vecs:
+                embedding = vecs[0]
 
         db = self._conn()
         try:
             db.execute(
                 """INSERT OR REPLACE INTO deep_memory
-                   (key, value, category, embedding, metadata, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   (key, value, category, priority, embedding, metadata, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     key,
                     json.dumps(value, ensure_ascii=False),
                     category,
+                    priority,
                     json.dumps(embedding),
                     json.dumps(meta, ensure_ascii=False),
                     time.time(),
                 ),
             )
+            self._fts_upsert(db, key, value if isinstance(value, str) else str(value))
             db.commit()
         finally:
             db.close()
@@ -121,6 +152,7 @@ class DeepMemory(MemoryProvider):
         db = self._conn()
         try:
             db.execute("DELETE FROM deep_memory WHERE key = ?", (key,))
+            self._fts_delete(db, key)
             db.commit()
         finally:
             db.close()
@@ -130,6 +162,10 @@ class DeepMemory(MemoryProvider):
         db = self._conn()
         try:
             db.execute("DELETE FROM deep_memory")
+            try:
+                db.execute("DELETE FROM deep_memory_fts")
+            except Exception:
+                pass
             db.commit()
         finally:
             db.close()
@@ -141,17 +177,19 @@ class DeepMemory(MemoryProvider):
     async def search(
         self, query: str, top_k: int = 10, *, query_embedding: list[float] | None = None
     ) -> list[dict[str, Any]]:
-        """语义搜索：按向量余弦相似度排序。
+        """混合检索：向量余弦 + FTS5 BM25 经 RRF 融合排序。"""
+        if query_embedding is None and query:
+            vecs = self._embed_texts(self._get_embedder(), [query])
+            if vecs:
+                query_embedding = vecs[0]
 
-        如果未提供 query_embedding，则回退到全表返回
-        （调用方应先通过 embedding API 获取向量）。
-        """
         db = self._conn()
         try:
             rows = db.execute(
-                "SELECT key, value, category, embedding, metadata, created_at "
+                "SELECT key, value, category, priority, embedding, metadata, created_at "
                 "FROM deep_memory ORDER BY created_at DESC"
             ).fetchall()
+            bm25_ranks = self._bm25_ranks(db, query) if query else {}
         finally:
             db.close()
 
@@ -159,22 +197,22 @@ class DeepMemory(MemoryProvider):
             return []
 
         results: list[dict[str, Any]] = []
-        for key, value, category, emb_json, meta_json, created_at in rows:
+        for key, value, category, priority, emb_json, meta_json, created_at in rows:
             results.append({
                 "key": key,
                 "value": json.loads(value),
                 "category": category,
+                "priority": priority,
                 "embedding": json.loads(emb_json) if emb_json else [],
                 "metadata": json.loads(meta_json),
                 "created_at": created_at,
                 "score": 0.0,
             })
 
-        # 向量相似度排序
+        vector_ranks: dict[str, int] = {}
         if query_embedding:
-            for r in results:
-                r["score"] = self._cosine_similarity(query_embedding, r["embedding"])
-            results.sort(key=lambda x: x["score"], reverse=True)
+            vector_ranks = self._vector_ranks(results, query_embedding)
+        self._rrf_fuse(results, vector_ranks, bm25_ranks)
 
         return results[:top_k]
 
@@ -185,7 +223,7 @@ class DeepMemory(MemoryProvider):
         db = self._conn()
         try:
             rows = db.execute(
-                "SELECT key, value, category, embedding, metadata, created_at "
+                "SELECT key, value, category, priority, embedding, metadata, created_at "
                 "FROM deep_memory WHERE category = ? "
                 "ORDER BY created_at DESC LIMIT ?",
                 (category, limit),
@@ -198,9 +236,10 @@ class DeepMemory(MemoryProvider):
                 "key": r[0],
                 "value": json.loads(r[1]),
                 "category": r[2],
-                "embedding": json.loads(r[3]) if r[3] else [],
-                "metadata": json.loads(r[4]),
-                "created_at": r[5],
+                "priority": r[3],
+                "embedding": json.loads(r[4]) if r[4] else [],
+                "metadata": json.loads(r[5]),
+                "created_at": r[6],
             }
             for r in rows
         ]
@@ -220,3 +259,154 @@ class DeepMemory(MemoryProvider):
         if norm_a == 0 or norm_b == 0:
             return 0.0
         return dot / (norm_a * norm_b)
+
+    # ------------------------------------------------------------------
+    # 本地 embedding
+    # ------------------------------------------------------------------
+
+    def _get_embedder(self) -> Any:
+        """懒加载本地 embedding 模型（可注入自定义实现）。"""
+        if self._embedder is None:
+            from sump.memory.embedder import Embedder
+
+            self._embedder = Embedder(cache_dir=self._embedder_cache_dir)
+        return self._embedder
+
+    @staticmethod
+    def _embed_texts(embedder: Any, texts: list[str]) -> list[list[float]]:
+        """调用 embedder 生成向量，失败时返回空列表。"""
+        try:
+            vectors = embedder.embed(texts)
+        except Exception:
+            return []
+        result: list[list[float]] = []
+        for v in vectors:
+            result.append([float(x) for x in np.asarray(v, dtype=np.float32)])
+        return result
+
+    @staticmethod
+    def _rank_by_cosine(
+        results: list[dict[str, Any]], query_embedding: list[float]
+    ) -> None:
+        """numpy 批量余弦相似度，原地写回 score 并按降序排序。"""
+        q = np.asarray(query_embedding, dtype=np.float32)
+        dim = q.shape[0]
+        idx = [i for i, r in enumerate(results) if len(r["embedding"]) == dim]
+        if not idx:
+            return
+        matrix = np.array(
+            [results[i]["embedding"] for i in idx], dtype=np.float32
+        )
+        q_norm = float(np.linalg.norm(q))
+        denom = np.linalg.norm(matrix, axis=1) * q_norm
+        denom[denom == 0] = 1e-12
+        scores = (matrix @ q) / denom
+        for i, s in zip(idx, scores):
+            results[i]["score"] = float(s)
+        results.sort(key=lambda x: x["score"], reverse=True)
+
+    # ------------------------------------------------------------------
+    # 过期回收
+    # ------------------------------------------------------------------
+
+    async def delete_expired(self, retention_days: int) -> int:
+        """删除超过保留期的深层记忆；80% 安全阈值防误删，返回删除条数。"""
+        if retention_days < 3:
+            return 0
+        cutoff = time.time() - retention_days * 86400
+        db = self._conn()
+        try:
+            total = db.execute("SELECT COUNT(*) FROM deep_memory").fetchone()[0]
+            expired = db.execute(
+                "SELECT COUNT(*) FROM deep_memory WHERE created_at < ?", (cutoff,)
+            ).fetchone()[0]
+            if total == 0 or expired / total > 0.8:
+                return 0
+            cur = db.execute("DELETE FROM deep_memory WHERE created_at < ?", (cutoff,))
+            try:
+                db.execute(
+                    "DELETE FROM deep_memory_fts WHERE key NOT IN (SELECT key FROM deep_memory)"
+                )
+            except Exception:
+                pass
+            db.commit()
+            return cur.rowcount
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
+    # 混合检索（FTS5 + 向量 RRF）
+    # ------------------------------------------------------------------
+
+    def _bm25_ranks(self, db: sqlite3.Connection, query: str) -> dict[str, int]:
+        """FTS5 BM25 召回，返回 key → 排名（1 起）。不可用或过短时返回空。"""
+        safe = query.replace('"', " ").strip()
+        if len(safe) < 3:
+            return {}
+        try:
+            rows = db.execute(
+                "SELECT key FROM deep_memory_fts WHERE deep_memory_fts MATCH ? "
+                "ORDER BY bm25(deep_memory_fts) LIMIT 200",
+                (f'"{safe}"',),
+            ).fetchall()
+        except Exception:
+            return {}
+        return {key: i + 1 for i, (key,) in enumerate(rows)}
+
+    @staticmethod
+    def _vector_ranks(
+        results: list[dict[str, Any]], query_embedding: list[float]
+    ) -> dict[str, int]:
+        """向量余弦召回，返回 key → 排名（1 起）。"""
+        q = np.asarray(query_embedding, dtype=np.float32)
+        dim = q.shape[0]
+        scored = [
+            (i, r["key"]) for i, r in enumerate(results)
+            if len(r["embedding"]) == dim
+        ]
+        if not scored:
+            return {}
+        matrix = np.array(
+            [results[i]["embedding"] for i, _ in scored], dtype=np.float32
+        )
+        q_norm = float(np.linalg.norm(q))
+        denom = np.linalg.norm(matrix, axis=1) * q_norm
+        denom[denom == 0] = 1e-12
+        scores = (matrix @ q) / denom
+        ranked = sorted(zip([k for _, k in scored], scores), key=lambda x: -x[1])
+        return {key: i + 1 for i, (key, _) in enumerate(ranked)}
+
+    @staticmethod
+    def _rrf_fuse(
+        results: list[dict[str, Any]],
+        vector_ranks: dict[str, int],
+        bm25_ranks: dict[str, int],
+        k: int = 60,
+    ) -> None:
+        """RRF 融合：score = Σ 1/(k+rank)，原地写回并按降序排序。"""
+        for r in results:
+            score = 0.0
+            if r["key"] in vector_ranks:
+                score += 1.0 / (k + vector_ranks[r["key"]])
+            if r["key"] in bm25_ranks:
+                score += 1.0 / (k + bm25_ranks[r["key"]])
+            r["score"] = score
+        results.sort(key=lambda x: x["score"], reverse=True)
+
+    @staticmethod
+    def _fts_upsert(db: sqlite3.Connection, key: str, content: str) -> None:
+        try:
+            db.execute("DELETE FROM deep_memory_fts WHERE key = ?", (key,))
+            db.execute(
+                "INSERT INTO deep_memory_fts (key, content) VALUES (?, ?)",
+                (key, content),
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _fts_delete(db: sqlite3.Connection, key: str) -> None:
+        try:
+            db.execute("DELETE FROM deep_memory_fts WHERE key = ?", (key,))
+        except Exception:
+            pass

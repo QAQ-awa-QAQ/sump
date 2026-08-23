@@ -6,13 +6,20 @@ from sump.agent import Agent
 from sump.types import Message
 
 
+class _FakeEmbedder:
+    """模拟 embedding，避免测试联网下载模型。"""
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[float(len(t)), 1.0, 0.0] for t in texts]
+
+
 class TestAgentRunStream:
     """测试 Agent.run_stream 核心流程。"""
 
     @pytest.mark.asyncio
     async def test_simple_response(self, config):
         """无工具时的纯文本回复流程。"""
-        agent = Agent(config)
+        agent = Agent(config, deep_embedder=_FakeEmbedder())
         agent.llm._backend = _FakeDeepSeek(stream_texts=["Hello, world!"])
 
         events = []
@@ -26,7 +33,7 @@ class TestAgentRunStream:
     @pytest.mark.asyncio
     async def test_tool_call_flow(self, config):
         """工具调用流程：LLM 返回 tool_call -> 安全检查 -> 执行 -> 继续。"""
-        agent = Agent(config)
+        agent = Agent(config, deep_embedder=_FakeEmbedder())
         agent.llm._backend = _FakeDeepSeek(
             chat_responses=[
                 {

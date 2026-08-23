@@ -23,6 +23,8 @@ Thumbs.db
 # Project
 data/memory.db
 data/logs/
+data/models/
+data/*.db
 node_modules/
 
 # UV

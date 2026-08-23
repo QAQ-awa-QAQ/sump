@@ -24,6 +24,7 @@ def config(tmp_path) -> Config:
         ("session", "session.db"),
         ("shallow", "shallow.db"),
         ("deep", "deep.db"),
+        ("scene", "scene.db"),
         ("working", "working.db"),
     ):
         node = memory.setdefault(key, {})

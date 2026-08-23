@@ -1,5 +1,7 @@
 """浅层记忆测试"""
 
+import time
+
 from sump.memory.shallow import ShallowMemory
 
 
@@ -30,3 +32,28 @@ class TestShallowMemory:
         mem.add_entry("语义", "内容")
         mem.clear()
         assert mem.list_entries() == []
+
+    def test_list_all_entries(self, tmp_path):
+        mem = ShallowMemory(str(tmp_path / "shallow.db"))
+        mem.add_entry("语义", "A")
+        mem.add_entry("error", "B")
+        assert len(mem.list_all_entries()) == 2
+
+    def test_add_with_priority(self, tmp_path):
+        mem = ShallowMemory(str(tmp_path / "shallow.db"))
+        mem.add_entry("语义", "内容", priority=80)
+        assert mem.list_all_entries()[0]["priority"] == 80
+
+    def test_delete_expired(self, tmp_path):
+        mem = ShallowMemory(str(tmp_path / "shallow.db"))
+        mem.add_entry("语义", "旧1", priority=80)
+        mem.add_entry("语义", "旧2", priority=80)
+        mem.add_entry("语义", "新1", priority=80)
+        db = mem._conn()
+        db.execute(
+            "UPDATE shallow_memory SET created_at = ? WHERE id IN (1, 2)",
+            (time.time() - 400 * 86400,),
+        )
+        db.commit()
+        db.close()
+        assert mem.delete_expired(365) == 2
