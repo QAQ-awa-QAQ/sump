@@ -36,6 +36,8 @@ class ShallowMemory:
         self._embedder_cache_dir = embedder_cache_dir
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        self._cache: list[dict[str, Any]] | None = None
+        self._cache_version: int = -1
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self._path))
@@ -88,6 +90,7 @@ class ShallowMemory:
             return int(cur.lastrowid)
         finally:
             db.close()
+        self._cache = None
 
     def list_entries(
         self, category: str | None = None, limit: int = 20
@@ -123,6 +126,21 @@ class ShallowMemory:
 
     def list_all_entries(self) -> list[dict[str, Any]]:
         """列出全部浅层记忆条目（按 id 倒序）。"""
+        return [dict(e) for e in self._cached_entries()]
+
+    # ------------------------------------------------------------------
+    # 内存缓存索引（避免每次检索全表 json.loads）
+    # ------------------------------------------------------------------
+
+    def _db_version(self) -> int:
+        db = self._conn()
+        try:
+            row = db.execute("SELECT COUNT(*) FROM shallow_memory").fetchone()
+            return int(row[0])
+        finally:
+            db.close()
+
+    def _load_entries(self) -> list[dict[str, Any]]:
         db = self._conn()
         try:
             rows = db.execute(
@@ -143,6 +161,13 @@ class ShallowMemory:
             }
             for r in rows
         ]
+
+    def _cached_entries(self) -> list[dict[str, Any]]:
+        version = self._db_version()
+        if self._cache is None or version != self._cache_version:
+            self._cache = self._load_entries()
+            self._cache_version = version
+        return self._cache
 
     def list_entries_since(self, min_id: int, limit: int = 1000) -> list[dict[str, Any]]:
         """列出 id > min_id 的浅层条目（按 id 正序）。"""
@@ -177,6 +202,7 @@ class ShallowMemory:
             return cur.rowcount > 0
         finally:
             db.close()
+        self._cache = None
 
     def clear(self) -> None:
         """清空所有浅层记忆。"""
@@ -186,6 +212,7 @@ class ShallowMemory:
             db.commit()
         finally:
             db.close()
+        self._cache = None
 
     def delete_expired(self, retention_days: int) -> int:
         """删除超过保留期的条目；80% 安全阈值防误删，返回删除条数。"""
@@ -205,6 +232,7 @@ class ShallowMemory:
             return cur.rowcount
         finally:
             db.close()
+        self._cache = None
 
     def search(
         self, query: str, top_k: int = 10, *, query_embedding: list[float] | None = None

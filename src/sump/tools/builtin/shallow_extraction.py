@@ -8,6 +8,7 @@
 import json
 from typing import Any
 
+from sump.memory._llm_json import chat_flash_json
 from sump.tools.base import Tool
 
 
@@ -21,11 +22,13 @@ class ShallowExtractionTool(Tool):
     def __init__(
         self, llm: Any, shallow_memory: Any,
         max_chars_per_batch: int = 8000, priority_threshold: int = 60,
+        owner_marker: str | None = None,
     ) -> None:
         self._llm = llm
         self._shallow_memory = shallow_memory
         self._max_chars_per_batch = max_chars_per_batch
         self._priority_threshold = priority_threshold
+        self._owner_marker = owner_marker
 
     async def execute(
         self,
@@ -34,9 +37,31 @@ class ShallowExtractionTool(Tool):
         **kwargs: Any,
     ) -> str:
         """提炼并写入浅层记忆，返回结果描述。"""
+        _, report = await self.execute_checked(session_id, messages)
+        return report
+
+    async def execute_checked(
+        self,
+        session_id: str = "",
+        messages: list[dict[str, Any]] | None = None,
+    ) -> tuple[bool, str]:
+        """提炼并写入浅层记忆，返回 (是否全部成功, 结果描述)。
+
+        全部失败或部分批次失败时返回 False，供上层保留原始消息待重试。
+        """
         msgs = messages or []
         if not msgs:
-            return "无消息可提取"
+            return True, "无消息可提取"
+
+        # 只提炼主人消息（带 owner_marker 标记），其余不进长期记忆
+        if self._owner_marker:
+            owner_msgs = [
+                m for m in msgs
+                if self._owner_marker in str(m.get("content", ""))
+            ]
+            if not owner_msgs:
+                return True, "无主人消息可提炼"
+            msgs = owner_msgs
 
         # 超长会话：按对话分界切批，一次只喂一部分，避免超出上下文
         batches = self._split_batches(msgs, self._max_chars_per_batch)
@@ -51,23 +76,26 @@ class ShallowExtractionTool(Tool):
                 failed += 1
 
         if failed and total == 0:
-            return "提炼失败：模型返回无法解析"
+            return False, "提炼失败：模型返回无法解析"
+        if failed:
+            return False, f"提炼部分失败：{failed}/{len(batches)} 批解析失败，提取 {total} 条"
         if total == 0:
-            return "无需提炼"
+            return True, "无需提炼"
 
         suffix = f"（{len(batches)} 批）" if len(batches) > 1 else ""
-        if failed:
-            suffix += f"，{failed} 批解析失败"
-        return f"提取 {total} 条浅层记忆{suffix}"
+        return True, f"提取 {total} 条浅层记忆{suffix}"
 
     async def _extract_batch(
         self, session_id: str, messages: list[dict[str, Any]]
     ) -> tuple[int, bool]:
         """对一批消息做一次提炼，返回 (写入条数, 是否解析成功)。"""
-        raw = await self._llm.chat_flash(
-            self._build_prompt(messages), max_tokens=512, temperature=0.3
+        data = await chat_flash_json(
+            self._llm,
+            self._build_prompt(messages),
+            max_tokens=512,
+            temperature=0.3,
+            label="shallow_extraction",
         )
-        data = self._parse_json(raw)
         if data is None:
             return 0, False
 

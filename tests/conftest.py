@@ -31,6 +31,8 @@ def config(tmp_path) -> Config:
     ):
         node = memory.setdefault(key, {})
         node["db_path"] = str(tmp_path / filename)
+    # 默认不启用主人标记过滤（专门测试用 owner_marker）
+    memory["owner_marker"] = ""
     return cfg
 
 
@@ -87,3 +89,14 @@ class MockLLMClient:
 @pytest.fixture
 def mock_llm() -> MockLLMClient:
     return MockLLMClient()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_event_bus(tmp_path):
+    """每个测试用独立的 event.db，避免污染项目 data/ 目录。"""
+    import sump.event.bus as bus_module
+
+    previous = bus_module._singleton
+    bus_module._singleton = bus_module.EventBus(str(tmp_path / "event.db"))
+    yield
+    bus_module._singleton = previous

@@ -96,3 +96,28 @@ class TestMemoryConsolidation:
         # 第二次执行：游标已推进，不再重复处理
         result2 = await tool.execute()
         assert "无新浅层记忆" in result2
+
+
+class TestCleanupQQImages:
+    def test_cleanup_qq_images(self, config, tmp_path):
+        import os
+        import time
+
+        img_dir = tmp_path / "imgs"
+        img_dir.mkdir()
+        old = img_dir / "old.jpg"
+        old.write_bytes(b"x")
+        new = img_dir / "new.jpg"
+        new.write_bytes(b"y")
+        old_time = time.time() - 8 * 86400
+        os.utime(str(old), (old_time, old_time))
+
+        config._data.setdefault("napcat", {})["image_dir"] = str(img_dir)
+        config._data["napcat"]["image_retention_days"] = 7
+
+        tool = MemoryConsolidationTool(config, _SeqLLM([]), deep_embedder=_FakeEmbedder())
+        removed = tool._cleanup_qq_images()
+
+        assert removed == 1
+        assert not old.exists()
+        assert new.exists()

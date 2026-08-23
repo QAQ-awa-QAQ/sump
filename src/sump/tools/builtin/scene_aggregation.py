@@ -3,6 +3,7 @@
 import json
 from typing import Any
 
+from sump.memory._llm_json import chat_flash_json
 from sump.tools.base import Tool
 
 
@@ -54,10 +55,13 @@ class SceneAggregationTool(Tool):
         self, entries: list[dict[str, Any]]
     ) -> tuple[int, bool]:
         """对一批条目做一次聚类，返回 (场景数, 是否解析成功)。"""
-        raw = await self._llm.chat_flash(
-            self._build_prompt(entries), max_tokens=1024, temperature=0.3
+        data = await chat_flash_json(
+            self._llm,
+            self._build_prompt(entries),
+            max_tokens=1024,
+            temperature=0.3,
+            label="scene_aggregation",
         )
-        data = self._parse_json(raw)
         if data is None:
             return 0, False
 

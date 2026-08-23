@@ -31,6 +31,12 @@ class LLMClient:
         """发送对话请求，返回完整响应（含 reasoning_content、tool_calls、usage）。"""
         return await self._backend.chat(messages, tools=tools)
 
+    async def chat_vision(
+        self, text: str, image_url: str, *, max_tokens: int = 1024
+    ) -> str:
+        """视觉模型：图片 + 文本 → 文本描述（仅图像工具用）。"""
+        return await self._backend.chat_vision(text, image_url, max_tokens=max_tokens)
+
     def chat_stream(
         self, messages: list[dict[str, Any]]
     ) -> AsyncGenerator[dict[str, Any], None]:

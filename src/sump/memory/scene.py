@@ -25,6 +25,8 @@ class SceneMemory:
         self._embedder_cache_dir = embedder_cache_dir
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        self._cache: list[dict[str, Any]] | None = None
+        self._cache_version: float = -1.0
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self._path))
@@ -77,15 +79,33 @@ class SceneMemory:
             db.commit()
         finally:
             db.close()
+        self._cache = None
 
     def list_scenes(self, limit: int = 50) -> list[dict[str, Any]]:
         """列出场景块，按 priority 降序。"""
+        return [dict(e) for e in self._cached_entries()[:limit]]
+
+    # ------------------------------------------------------------------
+    # 内存缓存索引（避免每次检索全表 json.loads）
+    # ------------------------------------------------------------------
+
+    def _db_version(self) -> float:
+        """以最大 updated_at 作为缓存版本号（upsert 更新 summary 也会变化）。"""
+        db = self._conn()
+        try:
+            row = db.execute(
+                "SELECT COALESCE(MAX(updated_at), 0) FROM scene_memory"
+            ).fetchone()
+            return float(row[0])
+        finally:
+            db.close()
+
+    def _load_entries(self) -> list[dict[str, Any]]:
         db = self._conn()
         try:
             rows = db.execute(
                 "SELECT name, summary, priority, embedding, created_at, updated_at "
-                "FROM scene_memory ORDER BY priority DESC, updated_at DESC LIMIT ?",
-                (limit,),
+                "FROM scene_memory ORDER BY priority DESC, updated_at DESC"
             ).fetchall()
         finally:
             db.close()
@@ -100,6 +120,13 @@ class SceneMemory:
             }
             for r in rows
         ]
+
+    def _cached_entries(self) -> list[dict[str, Any]]:
+        version = self._db_version()
+        if self._cache is None or version != self._cache_version:
+            self._cache = self._load_entries()
+            self._cache_version = version
+        return self._cache
 
     def delete_expired(self, retention_days: int) -> int:
         """删除超过保留期的场景块；80% 安全阈值防误删。"""
@@ -119,6 +146,7 @@ class SceneMemory:
             return cur.rowcount
         finally:
             db.close()
+        self._cache = None
 
     def _dump_metadata(self) -> str:
         """供调试：返回场景列表的 JSON。"""

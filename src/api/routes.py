@@ -9,9 +9,14 @@ from pydantic import BaseModel
 
 from sump.agent import Agent
 from sump.config import Config
+from sump.core.sleep import get_sleep_manager
+from sump.memory.archive import ArchiveMemory
 
 router = APIRouter(prefix="/api")
 config = Config()
+
+# 归档历史（独立只读访问，供前端查看历史记录）
+_archive = ArchiveMemory(config.get("memory.archive.db_path", "data/archive.db"))
 
 # ---- Agent 实例池（按 session_id 隔离，避免并发串扰）----
 _session_agents: dict[str, Agent] = {}
@@ -207,3 +212,40 @@ async def approve_tool(body: ApproveRequest):
             result = await agent.approve_command(body.call_id, body.approved)
             return {"result": result[:500], "continue": True}
     raise HTTPException(404, "审批请求已过期或不存在")
+
+
+# ---- 记忆整理（手动触发） ----
+
+@router.post("/memory/consolidate")
+async def consolidate_memory() -> dict[str, Any]:
+    """手动触发一次记忆整理（不依赖睡眠窗口与空闲时长）。"""
+    try:
+        result = await get_sleep_manager().consolidate_now()
+    except Exception as e:
+        raise HTTPException(500, f"记忆整理失败: {e}")
+    return {"ok": True, "result": result[:2000]}
+
+
+# ---- 归档历史（前端查看历史记录） ----
+
+@router.get("/archive/sessions")
+async def list_archive_sessions() -> list[dict[str, Any]]:
+    """列出已归档的历史会话（session_id + 标题 + 消息数）。"""
+    return _archive.list_sessions()
+
+
+@router.get("/archive/sessions/{session_id}")
+async def get_archive_session(session_id: str) -> dict[str, Any]:
+    """读取某个归档会话的完整消息副本（按时间正序）。"""
+    msgs = _archive.load_messages(session_id)
+    if not msgs:
+        raise HTTPException(404, "归档会话不存在")
+    return {"id": session_id, "messages": msgs}
+
+
+@router.get("/archive/search")
+async def search_archive(q: str = "") -> list[dict[str, Any]]:
+    """全文检索归档消息（FTS5），返回命中消息（session_id + content）。"""
+    if not q.strip():
+        return []
+    return _archive.search(q, top_k=20)

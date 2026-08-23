@@ -21,11 +21,12 @@ Agent.run_stream(user_input)         ← 唯一入口（CLI/API 共用）
             │    ├─ yield {"type":"tool_call", ...}
             │    ├─ Judge.analyze()           ← 规则匹配（毫秒级）
             │    ├─ Judge.analyze_llm()       ← LLM Flash 深度分析
-            │    ├─ yield {"type":"security_check", ...}
             │    ├─ Interceptor.check()       ← 终裁，产出 SecurityEvent
-            │    ├─ CLI: 同步审批 → 执行/拒绝
-            │    └─ API: 挂起 pending → yield call_id → 等前端审批
-            │         └─ Agent.approve_command() → 执行 → 替换结果
+            │    ├─ 执行 / 挂起 / 拒绝
+            │    │    ├─ CLI: 同步审批
+            │    │    └─ API: 挂起 pending → 审批超时 30s 自动拒绝
+            │    └─ InternalEvaluator 评估 → Arbiter 裁决
+            │         └─ finish 则提前结束 → _stream_final()
             └─ else:
                  └─ Executor._stream_final()
                       └─ yield {"type":"reasoning"|"content", ...}
@@ -69,7 +70,13 @@ graph TD
     CFG -->|解析| YAML[configs/*.yaml]
 
     REG -->|注册| ST[tools/builtin/shell.py<br/>ShellTool]
+    REG -->|注册| IMV[tools/builtin/image_vision.py<br/>ImageVisionTool]
     REG -->|扩展| MCP[tools/mcp/client.py<br/>MCPClient]
+    A -->|发布/订阅| BUS[event/bus.py<br/>EventBus]
+    BUS -->|订阅回复| NAP[plugins/builtin/napcat_plugin.py<br/>NapCatPlugin]
+    NAP -->|驱动| A
+    EX -->|工具后评估| EVAL[evaluation/internal.py<br/>InternalEvaluator] --> ARB[evaluation/arbiter.py<br/>Arbiter]
+    A -->|加载/创建技能| SKM[skills/manager.py + creator.py<br/>SkillManager/SkillCreator]
 
     SLPM[core/sleep.py<br/>SleepManager] -->|深睡触发| CONS[tools/builtin/memory_consolidation.py<br/>MemoryConsolidationTool]
     CONS -->|会话→浅层| SHEX[tools/builtin/shallow_extraction.py]
@@ -141,12 +148,16 @@ Vite + TypeScript SPA (src/frontend/)
 |------|------|----------|
 | `__init__(config?)` | Config → Context → LLMClient → ToolRegistry → SessionMemory → Planner → Executor → `_load_session()` | 外部实例化 |
 | `run_stream(user_input)` | `ctx.add_user_message()` → `planner.plan()` → `executor.execute(plan)` → yield event | CLI / API |
-| `run_core()` | `planner.plan()` → `executor.execute(plan)` → yield event | API `__continue__` |
-| `approve_command(id, approved)` | `_pending_approvals` → 执行/拒绝 → 替换上下文 | API `/tools/approve` |
+| `run_core()` | `planner.plan()` → `executor.execute(plan)` → yield event | API `__continue__` / NapCat |
+| `approve_command(id, approved)` | `_pending_approvals` → 执行/拒绝 → 替换上下文 | API `/tools/approve` / NapCat |
+| `approve_and_continue(id, approved)` | `approve_command()` → `run_core()` | NapCat 数字审批 |
 | `switch_session(id)` | `ctx.messages.clear()` → `_load_session()` | API 路由 |
 | `new_session()` | `uuid4().hex` → `switch_session()` | API 路由 |
-| `_cli_security_check()` | 调用 `on_security_check` 回调；API 模式返回 `None` 触发挂起 | Executor |
-| `_api_approval_pending()` | 写入 `_pending_approvals` 队列 | Executor |
+| `connect_mcp()` | 连 MCP 服务器 → 工具注册进 ToolRegistry | 启动时按配置 |
+| `_api_approval_pending()` | 写入 `_pending_approvals` + 发布审批事件 + 启动超时定时器 | Executor |
+| `_approval_timeout()` | 超时自动拒绝 + 发布过期事件 | 定时任务 |
+
+> 事件总线：`run_stream`/`run_core` 发布 `agent.message.received` / `agent.reply` / `agent.tool_call` / `agent.tool_result` / `agent.approval.pending` / `agent.approval.expired`。
 
 ---
 
@@ -170,6 +181,7 @@ Vite + TypeScript SPA (src/frontend/)
 | `execute(plan)` | 无工具 → `_stream_final()`；有工具 → chat_full + `_process_tools()` | Agent |
 | `_process_tools(tool_calls)` | Judge.analyze() → Judge.analyze_llm() → Interceptor.check() → 三态安全回调 → 执行/挂起/拒绝 | execute |
 | `_analyze_security(command)` | 规则匹配 → LLM Flash 分析 → Interceptor 终裁 | _process_tools |
+| `_should_finish()` | `InternalEvaluator.evaluate()` → `Arbiter.arbitrate()`，finish 则提前结束工具循环 | execute |
 | `_stream_final()` | `llm.chat_stream()` → yield reasoning/content chunk → 写入上下文 | execute |
 
 ---
@@ -203,10 +215,12 @@ Vite + TypeScript SPA (src/frontend/)
 |----|------|------|
 | `LLMClient` | `chat_full(messages, tools?)` | 统一入口，委托 DeepSeekClient |
 | `LLMClient` | `chat_stream(messages)` | 流式输出，委托 DeepSeekClient |
-| `DeepSeekClient` | `chat()` | 非流式调用，带指数退避重试 |
-| `DeepSeekClient` | `chat_stream()` | 流式调用，带指数退避重试 |
-| `DeepSeekClient` | `_retry_call()` | 自动识别可重试错误（限流/服务端错误/超时/连接） |
-| `DeepSeekClient` | `_build_kwargs()` | 统一构建 thinking mode / reasoning_effort / temperature 参数 |
+| `LLMClient` | `chat_flash(text)` | flash 不思考，文字进文字出 |
+| `LLMClient` | `chat_vision(text, image_url)` | 视觉模型（仅图像工具用） |
+| `DeepSeekClient` | `chat()` | 非流式，含 XML 工具调用解析兜底 |
+| `DeepSeekClient` | `chat_stream()` | 流式调用 |
+| `DeepSeekClient` | `_retry_call()` | 指数退避重试 |
+| `DeepSeekClient` | `_build_kwargs()` | thinking mode / reasoning_effort / temperature |
 
 ---
 
@@ -224,11 +238,12 @@ Vite + TypeScript SPA (src/frontend/)
 | `WorkingMemory` | - | 跨会话任务进度（goal 摘要 + note） |
 | `Embedder` | - | 本地 embedding（bge-small-zh，单例 + 预下载） |
 | `PersonaManager` | - | SOUL.md / AGENTS.md 注入 + 睡眠精简 |
-| `MemoryRetriever` | - | 深层强制注入 + 浅层/场景按需召回 + 三重上限 |
+| `MemoryRetriever` | - | 核心强制注入（独立预算）+ 深层/浅层/场景相关召回（独立预算）+ 三重上限 |
 | `DeepDedup` | - | store / update / merge / skip 冲突检测 |
 | `ConflictResolver` | - | 深层旧条目矛盾检测 |
 | `ConsolidationState` | - | 增量游标（session_msg_id / shallow_id） |
 | `MemoryProvider` (ABC) | - | `store / retrieve / forget / clear` |
+| `_llm_json` | - | LLM JSON 调用辅助：解析失败重试 3 次 + 日志 |
 
 > 睡眠巩固链路（纯增量，游标推进只处理新增）：
 >
@@ -248,10 +263,15 @@ Vite + TypeScript SPA (src/frontend/)
 > Agent._inject_context()
 >   ├─ persona.get_system_prompt()（灵魂）
 >   ├─ working_memory（进行中任务）
+>   ├─ skills（可用技能提示）
 >   └─ MemoryRetriever.recall(query)
->        ├─ DeepMemory.list_all → priority top N → <core-memories>（强制注入）
->        └─ ShallowMemory / SceneMemory.search → <relevant-memories>（按需召回）
+>        ├─ DeepMemory priority top N → <core-memories>（核心强制注入，独立预算）
+>        └─ DeepMemory.search + SceneMemory.search + ShallowMemory.search
+>             → <relevant-memories>（相关召回，独立预算；深层相关排除已注入核心）
 >   → system prompt → LLM
+>
+> 记忆提炼：ShallowExtractionTool 只提炼带 owner_marker 标记（主人）的消息，
+> 非主人消息不进长期记忆。三层 search 均带内存向量缓存索引（版本号惰性重建）。
 > ```
 
 ---
@@ -262,13 +282,15 @@ Vite + TypeScript SPA (src/frontend/)
 |----|------|------|
 | `Tool` (ABC) | ✅ | `execute()`, `to_openai_schema()` |
 | `ToolRegistry` | ✅ | 注册/获取/列出/schema 导出 |
-| `ShellTool` | ✅ | `subprocess` 执行，GBK 编码适配，30s 超时 |
-| `MCPClient` | ✅ | 完整 MCP 协议：JSON-RPC 2.0 + stdio + 多服务器管理 + 工具发现 |
+| `ShellTool` | ✅ | `subprocess` 执行，平台可配（windows/linux/auto），30s 超时 |
+| `ImageVisionTool` | ✅ | 视觉模型识图（本地路径转 base64 / URL） |
+| `MCPClient` | ✅ | MCP 协议：JSON-RPC 2.0 + stdio + 多服务器 + 工具发现 |
+| `MCPTool` / `register_mcp_tools` | ✅ | MCP 工具包装 + inputSchema 转 OpenAI + 自动注册 |
+| `Sandbox` | ✅ | 超时 + 异常隔离执行 |
 | `DateTimeTool` | ⚠️ | 桩 |
 | `FileTool` | ⚠️ | 桩 |
 | `SearchTool` | ⚠️ | 桩 |
 | `WebTool` | ⚠️ | 桩 |
-| `Sandbox` | ⚠️ | MCP 沙箱（桩） |
 
 ---
 
@@ -292,8 +314,9 @@ Vite + TypeScript SPA (src/frontend/)
 | 类 | 状态 | 说明 |
 |----|------|------|
 | `Skill` (ABC) | ✅ | `execute()`, `to_prompt()` |
-| `SkillManager` | ✅ | 注册/获取/列出/卸载 |
-| `SkillCreator` | ⚠️ | 从任务自动提炼技能（桩） |
+| `ProcedureSkill` | ✅ | 可持久化过程技能（name/description/steps/proficiency） |
+| `SkillManager` | ✅ | 注册/获取/列出/卸载 + `discover()` 从目录加载 |
+| `SkillCreator` | ✅ | LLM 从任务提炼技能 → 持久化 skills/permanent/ → 注册 |
 
 ---
 
@@ -301,9 +324,9 @@ Vite + TypeScript SPA (src/frontend/)
 
 | 类 | 状态 | 说明 |
 |----|------|------|
-| `InternalEvaluator` | ⚠️ | 内部自评（桩） |
-| `ExternalFeedback` | ⚠️ | 外部反馈收集（桩） |
-| `Arbiter` | ⚠️ | 综合裁决（桩） |
+| `InternalEvaluator` | ✅ | flash 判断任务是否完成（8s 超时降级） |
+| `ExternalFeedback` | ⚠️ | 反馈收集已实现，未接入循环 |
+| `Arbiter` | ✅ | 综合裁决 finish/continue/retry（阈值可配） |
 
 ---
 
@@ -312,8 +335,11 @@ Vite + TypeScript SPA (src/frontend/)
 | 类 | 状态 | 说明 |
 |----|------|------|
 | `HookSystem` | ✅ | `on()`, `emit()` 事件钩子 |
-| `SUMPAPI` | ✅ | `subscribe()`, `publish()` 事件流 |
-| `LoggerPlugin` | ✅ | 内置日志记录插件 |
+| `EventBus` | ✅ | 广播 + 记账，单例 `get_event_bus()` |
+| `AgentEvents` | ✅ | Agent 生命周期事件常量（消息/回复/工具/审批） |
+| `NapCatPlugin` | ✅ | QQ 适配：正向 WS + 零信任主人 + 数字审批 + 群聊自主插话 + 图片识别 |
+| `SUMPAPI` | ⚠️ | `subscribe()`, `publish()`（兼容保留，未使用） |
+| `LoggerPlugin` | ⚠️ | 内置日志记录插件（未接入） |
 | `setup_logger()` | ✅ | 分级日志初始化 |
 | `Tracer` | ⚠️ | span 记录（桩） |
 | `KeyOutput` | ⚠️ | 关键输出格式化（桩） |

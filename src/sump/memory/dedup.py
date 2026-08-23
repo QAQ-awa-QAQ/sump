@@ -6,6 +6,8 @@
 import json
 from typing import Any
 
+from sump.memory._llm_json import chat_flash_json
+
 
 class DeepDedup:
     """深层记忆去重：召回候选 + 批量 LLM 判断 store/update/merge/skip。"""
@@ -35,12 +37,13 @@ class DeepDedup:
             candidates[str(item["id"])] = hits
 
         # 2. 批量 LLM 判断
-        raw = await self._llm.chat_flash(
+        data = await chat_flash_json(
+            self._llm,
             self._build_prompt(new_items, candidates),
             max_tokens=2048,
             temperature=0.3,
+            label="deep_dedup",
         )
-        data = self._parse_json(raw)
 
         decisions = (data or {}).get("decisions") or []
         if not decisions:

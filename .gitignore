@@ -29,3 +29,6 @@ node_modules/
 
 # UV
 uv.lock
+
+# 本地敏感配置（api_key / token / QQ 号）
+configs/local.yaml

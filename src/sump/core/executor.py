@@ -16,8 +16,8 @@ from sump.types import Message
 # 审批回调类型
 # - CLI: (command, summary, danger) -> True=放行, False=拒绝, None=API模式挂起
 SecurityCallback = Callable[[str, str, str], bool | None] | None
-# API 审批挂起回调：(call_id, command, tool, tool_call_id, args) -> None
-ApprovalSink = Callable[[str, str, Any, str, dict[str, Any]], None] | None
+# 审批挂起回调：(call_id, command, tool, tool_call_id, args, summary, danger) -> None
+ApprovalSink = Callable[[str, str, Any, str, dict[str, Any], str, str], None] | None
 
 
 class Executor:
@@ -31,12 +31,16 @@ class Executor:
         *,
         security_check: SecurityCallback = None,
         on_approval_pending: ApprovalSink = None,
+        evaluator: Any = None,
+        arbiter: Any = None,
     ) -> None:
         self.ctx = ctx
         self.llm = llm
         self.tools = tools
         self._security_check = security_check
         self._on_approval_pending = on_approval_pending
+        self._evaluator = evaluator
+        self._arbiter = arbiter
         self._should_break = False
 
     # ------------------------------------------------------------------
@@ -71,10 +75,52 @@ class Executor:
                     yield event
                 if self._should_break:
                     return
+                # 评价：工具执行后评估是否已完成，完成则提前结束循环
+                if await self._should_finish():
+                    async for event in self._stream_final():
+                        yield event
+                    return
             else:
                 async for event in self._stream_final():
                     yield event
                 return
+
+    # ------------------------------------------------------------------
+    # 内部评估 + 裁决
+    # ------------------------------------------------------------------
+
+    async def _should_finish(self) -> bool:
+        """评估当前进展，裁决是否应结束工具循环。"""
+        if self._evaluator is None or self._arbiter is None:
+            return False
+        internal = await self._evaluator.evaluate(self._current_task(), self._recent_progress())
+        verdict = await self._arbiter.arbitrate(internal)
+        return verdict.get("action") in ("finish", "stop")
+
+    def _current_task(self) -> str:
+        """取第一条用户消息作为任务描述。"""
+        for m in self.ctx.messages:
+            if m.role == "user":
+                return m.content
+        return ""
+
+    def _recent_progress(self) -> str:
+        """把最近几条消息拼成当前进展文本。"""
+        parts: list[str] = []
+        for m in self.ctx.messages[-6:]:
+            if m.role == "system":
+                continue
+            content = m.content or ""
+            if m.tool_calls:
+                names = [
+                    t["function"]["name"]
+                    for t in m.tool_calls
+                    if isinstance(t, dict) and "function" in t
+                ]
+                content = "调用工具: " + ", ".join(names)
+            if content:
+                parts.append(f"{m.role}: {content[:300]}")
+        return "\n".join(parts)
 
     # ------------------------------------------------------------------
     # 工具处理
@@ -130,6 +176,7 @@ class Executor:
                         call_id = _uuid.uuid4().hex[:8]
                         self._on_approval_pending(
                             call_id, args["command"], tool, tc_id, args,
+                            sec_event.summary, sec_event.danger,
                         )
                         tr = (
                             f"⛔ 安全审查待确认 | call_id: {call_id} | "

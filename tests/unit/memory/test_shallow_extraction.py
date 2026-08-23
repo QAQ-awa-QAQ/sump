@@ -99,3 +99,39 @@ class TestShallowExtractionTool:
         assert "5 批" in result
         assert llm.call_count == 5
         assert len(shallow.list_entries()) == 5
+
+
+class TestOwnerMarkerFilter:
+    @pytest.mark.asyncio
+    async def test_only_owner_extracted(self, tmp_path):
+        shallow = ShallowMemory(str(tmp_path / "shallow.db"))
+        llm = _FakeLLM(
+            '{"important": true, "affects_next": false, "beneficial": false, '
+            '"memories": [{"category": "语义", "content": "用户喜欢 Python", "priority": 80}]}'
+        )
+        tool = ShallowExtractionTool(llm, shallow, owner_marker="·主人")
+        result = await tool.execute(
+            session_id="s1",
+            messages=[
+                {"role": "user", "content": "[小明] 你喜欢什么语言"},
+                {"role": "user", "content": "[小明·主人] 我喜欢 Python"},
+            ],
+        )
+        assert "提取 1 条" in result
+        entries = shallow.list_entries()
+        assert len(entries) == 1
+        assert entries[0]["content"] == "用户喜欢 Python"
+
+    @pytest.mark.asyncio
+    async def test_no_owner_message(self, tmp_path):
+        shallow = ShallowMemory(str(tmp_path / "shallow.db"))
+        llm = _FakeLLM(
+            '{"important": true, "affects_next": false, "beneficial": false, '
+            '"memories": [{"category": "语义", "content": "x", "priority": 80}]}'
+        )
+        tool = ShallowExtractionTool(llm, shallow, owner_marker="·主人")
+        result = await tool.execute(
+            session_id="s1", messages=[{"role": "user", "content": "[小明] 你好"}]
+        )
+        assert "无主人消息可提炼" in result
+        assert shallow.list_entries() == []

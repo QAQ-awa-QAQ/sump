@@ -1,15 +1,19 @@
 """SUMP API 服务入口"""
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import router
-from sump.core.sleep import get_sleep_manager
+from sump.core.sleep import SleepManager, get_sleep_manager
+from sump.debug.logger import setup_logger
 from sump.memory.embedder import Embedder
+from sump.plugins.builtin.napcat_plugin import NapCatPlugin
 
 
 def _warm_embedder(cache_dir: str | None) -> None:
@@ -20,14 +24,40 @@ def _warm_embedder(cache_dir: str | None) -> None:
         pass
 
 
+async def _startup_consolidate(sm: SleepManager) -> None:
+    """启动时先巩固一次（后台异步，不阻塞服务；失败只记日志）。"""
+    consolidation_logger = logging.getLogger("sump.consolidation")
+    try:
+        result = await sm.consolidate_now()
+        consolidation_logger.info("启动巩固完成：%s", result)
+    except Exception as exc:  # noqa: BLE001
+        consolidation_logger.error("启动巩固失败：%s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """服务生命周期：启动睡眠生理节拍 + 后台预下载模型，关闭时中断。"""
-    await get_sleep_manager().start()
-    cache_dir = get_sleep_manager().config.get("memory.deep.embedding_cache", None)
+    """服务生命周期：启动睡眠节拍 + 预下载模型 + 启动先巩固，关闭时中断。"""
+    sm = get_sleep_manager()
+    setup_logger(sm.config.get("debug.log_level", "INFO"))
+    log_file = sm.config.get("debug.log_file", None)
+    if log_file:
+        root = logging.getLogger("sump")
+        path = Path(log_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        root.addHandler(logging.FileHandler(path, encoding="utf-8"))
+
+    await sm.start()
+    cache_dir = sm.config.get("memory.deep.embedding_cache", None)
     asyncio.create_task(asyncio.to_thread(_warm_embedder, cache_dir))
+    # 启动先巩固（后台异步，默认关闭）
+    if bool(sm.config.get("sleep.consolidate_on_startup", False)):
+        asyncio.create_task(_startup_consolidate(sm))
+    # NapCat QQ 适配（按配置启用）
+    napcat = NapCatPlugin(sm.config)
+    await napcat.start()
     yield
-    await get_sleep_manager().stop()
+    await sm.stop()
+    await napcat.stop()
 
 
 def create_app() -> FastAPI:

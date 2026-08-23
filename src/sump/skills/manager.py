@@ -1,6 +1,10 @@
 """技能管理器（注册/发现/加载）"""
 
+import json
+from pathlib import Path
+
 from sump.skills.base import Skill
+from sump.skills.procedure import ProcedureSkill
 
 
 class SkillManager:
@@ -24,3 +28,20 @@ class SkillManager:
     def unregister(self, name: str) -> None:
         """移除技能"""
         self._skills.pop(name, None)
+
+    def discover(self, skills_dir: str) -> list[str]:
+        """从目录递归加载所有技能 JSON（skills/permanent/**/*.json），返回加载的技能名列表。"""
+        root = Path(skills_dir)
+        if not root.exists():
+            return []
+        loaded: list[str] = []
+        for path in sorted(root.rglob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                skill = ProcedureSkill.from_dict(data)
+            except (json.JSONDecodeError, OSError, TypeError):
+                continue
+            if skill.name:
+                self.register(skill)
+                loaded.append(skill.name)
+        return loaded

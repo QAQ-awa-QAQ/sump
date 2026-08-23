@@ -1,8 +1,10 @@
 """DeepSeek V4 API 客户端"""
 
 import asyncio
+import json
 import logging
 import os
+import re
 from collections.abc import AsyncGenerator, Callable
 from typing import Any, TypeVar
 
@@ -36,6 +38,7 @@ class DeepSeekClient:
         base_url = config.get("deepseek.base_url", "https://api.deepseek.com")
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._model = config.get("deepseek.model", "deepseek-v4-flash")
+        self._vision_model = config.get("deepseek.vision_model", "deepseek-v4-flash-vision-exp")
         self._reasoning_effort = config.get("deepseek.reasoning_effort", "high")
         self._thinking_enabled = config.get("deepseek.thinking_enabled", False)
         self._max_tokens = config.get("deepseek.max_tokens", 4096)
@@ -104,10 +107,17 @@ class DeepSeekClient:
             response = await self._client.chat.completions.create(**kwargs)
             choice = response.choices[0]
             msg = choice.message
+            content = msg.content or ""
+            tool_calls = self._serialize_tool_calls(msg.tool_calls)
+            if not tool_calls:
+                # DeepSeek V4 有时把工具调用以 XML 文本放在 content 里
+                tool_calls = self._parse_xml_tool_calls(content)
+                if tool_calls:
+                    content = ""
             return {
-                "content": msg.content or "",
+                "content": content,
                 "reasoning_content": getattr(msg, "reasoning_content", None),
-                "tool_calls": self._serialize_tool_calls(msg.tool_calls),
+                "tool_calls": tool_calls,
                 "usage": {
                     "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
                     "completion_tokens": response.usage.completion_tokens if response.usage else 0,
@@ -140,6 +150,32 @@ class DeepSeekClient:
             return response.choices[0].message.content or ""
 
         return await self._retry_call(_call, "DeepSeek flash")  # type: ignore[no-any-return]
+
+    async def chat_vision(
+        self, text: str, image_url: str, *, max_tokens: int = 1024
+    ) -> str:
+        """视觉模型：图片 + 文本 → 文本描述（仅图像工具用，主模型不受影响）。"""
+        messages: list[dict[str, Any]] = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": text},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        }]
+
+        kwargs: dict[str, Any] = {
+            "model": self._vision_model,
+            "messages": messages,
+            "stream": False,
+            "max_tokens": max_tokens,
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
+
+        async def _call() -> str:
+            response = await self._client.chat.completions.create(**kwargs)
+            return response.choices[0].message.content or ""
+
+        return await self._retry_call(_call, "DeepSeek vision")  # type: ignore[no-any-return]
 
     async def chat_stream(
         self, messages: list[dict[str, Any]]
@@ -188,6 +224,39 @@ class DeepSeekClient:
             }
             for tc in tool_calls
         ]
+
+    @staticmethod
+    def _parse_xml_tool_calls(content: str) -> list[dict[str, Any]] | None:
+        """解析 DeepSeek V4 放在 content 里的 XML 格式工具调用。
+
+        形如::
+
+            <tool_calls><invoke name="image_vision">
+            <parameter name="image">...</parameter>
+            </invoke></tool_calls>
+        """
+        if "<tool_calls>" not in content:
+            return None
+        calls: list[dict[str, Any]] = []
+        for idx, m in enumerate(
+            re.finditer(r'<invoke\s+name="([^"]+)">(.*?)</invoke>', content, re.DOTALL)
+        ):
+            name = m.group(1)
+            body = m.group(2)
+            params: dict[str, Any] = {}
+            for pm in re.finditer(
+                r'<parameter\s+name="([^"]+)">(.*?)</parameter>', body, re.DOTALL
+            ):
+                params[pm.group(1)] = pm.group(2)
+            calls.append({
+                "id": f"xml_{idx}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(params, ensure_ascii=False),
+                },
+            })
+        return calls or None
 
 
 # ------------------------------------------------------------------

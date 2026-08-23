@@ -12,13 +12,14 @@ from sump.event.api import SUMPAPI
 from sump.event.bus import EventBus, get_event_bus
 from sump.event.hooks import HookSystem
 from sump.event.journal import EventJournal
-from sump.event.names import SleepEvents
+from sump.event.names import AgentEvents, SleepEvents
 
 __all__ = [
     "EventBus",
     "EventJournal",
     "HookSystem",
     "SUMPAPI",
+    "AgentEvents",
     "SleepEvents",
     "get_event_bus",
 ]

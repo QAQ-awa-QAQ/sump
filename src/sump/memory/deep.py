@@ -41,6 +41,8 @@ class DeepMemory(MemoryProvider):
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        self._cache: list[dict[str, Any]] | None = None
+        self._cache_version: int = -1
 
     # ------------------------------------------------------------------
     # 数据库初始化
@@ -137,6 +139,7 @@ class DeepMemory(MemoryProvider):
             db.commit()
         finally:
             db.close()
+        self._cache = None
 
     async def retrieve(self, key: str, **kwargs: Any) -> Any | None:
         """按键检索深层记忆。"""
@@ -160,6 +163,7 @@ class DeepMemory(MemoryProvider):
             db.commit()
         finally:
             db.close()
+        self._cache = None
 
     async def clear(self) -> None:
         """清空所有深层记忆。"""
@@ -173,6 +177,7 @@ class DeepMemory(MemoryProvider):
             db.commit()
         finally:
             db.close()
+        self._cache = None
 
     # ------------------------------------------------------------------
     # 语义检索
@@ -187,34 +192,17 @@ class DeepMemory(MemoryProvider):
             if vecs:
                 query_embedding = vecs[0]
 
+        entries = self._cached_entries()
+        if not entries:
+            return []
+
         db = self._conn()
         try:
-            rows = db.execute(
-                "SELECT key, value, category, priority, embedding, metadata, access_count, last_access, created_at "
-                "FROM deep_memory ORDER BY created_at DESC"
-            ).fetchall()
             bm25_ranks = self._bm25_ranks(db, query) if query else {}
         finally:
             db.close()
 
-        if not rows:
-            return []
-
-        results: list[dict[str, Any]] = []
-        for key, value, category, priority, emb_json, meta_json, access_count, last_access, created_at in rows:
-            results.append({
-                "key": key,
-                "value": json.loads(value),
-                "category": category,
-                "priority": priority,
-                "embedding": json.loads(emb_json) if emb_json else [],
-                "metadata": json.loads(meta_json),
-                "access_count": access_count,
-                "last_access": last_access,
-                "created_at": created_at,
-                "score": 0.0,
-            })
-
+        results: list[dict[str, Any]] = [dict(e) for e in entries]
         vector_ranks: dict[str, int] = {}
         if query_embedding:
             vector_ranks = self._vector_ranks(results, query_embedding)
@@ -224,6 +212,52 @@ class DeepMemory(MemoryProvider):
         result = results[:top_k]
         self._touch(result)
         return result
+
+    # ------------------------------------------------------------------
+    # 内存缓存索引（避免每次检索全表 json.loads）
+    # ------------------------------------------------------------------
+
+    def _db_version(self) -> int:
+        """以行数作为缓存版本号（增删都会变化）。"""
+        db = self._conn()
+        try:
+            row = db.execute("SELECT COUNT(*) FROM deep_memory").fetchone()
+            return int(row[0])
+        finally:
+            db.close()
+
+    def _load_entries(self) -> list[dict[str, Any]]:
+        """全量读取并解析深层条目（含 embedding）。"""
+        db = self._conn()
+        try:
+            rows = db.execute(
+                "SELECT key, value, category, priority, embedding, metadata, access_count, last_access, created_at "
+                "FROM deep_memory ORDER BY created_at DESC"
+            ).fetchall()
+        finally:
+            db.close()
+        return [
+            {
+                "key": r[0],
+                "value": json.loads(r[1]),
+                "category": r[2],
+                "priority": r[3],
+                "embedding": json.loads(r[4]) if r[4] else [],
+                "metadata": json.loads(r[5]),
+                "access_count": r[6],
+                "last_access": r[7],
+                "created_at": r[8],
+            }
+            for r in rows
+        ]
+
+    def _cached_entries(self) -> list[dict[str, Any]]:
+        """返回缓存条目，版本变化时惰性重建。"""
+        version = self._db_version()
+        if self._cache is None or version != self._cache_version:
+            self._cache = self._load_entries()
+            self._cache_version = version
+        return self._cache
 
     async def search_by_category(
         self, category: str, limit: int = 20
@@ -374,6 +408,7 @@ class DeepMemory(MemoryProvider):
             return cur.rowcount
         finally:
             db.close()
+        self._cache = None
 
     # ------------------------------------------------------------------
     # 混合检索（FTS5 + 向量 RRF）

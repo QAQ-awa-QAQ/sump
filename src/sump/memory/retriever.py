@@ -1,13 +1,15 @@
-"""记忆召回（深层强制注入 + 浅层/场景按需召回，带三重上限）"""
+"""记忆召回（核心强制注入 + 深层/浅层/场景相关召回，预算各自独立）"""
 
 import asyncio
 from typing import Any
 
 
 class MemoryRetriever:
-    """深层核心信息强制注入（保证一致性），浅层/场景按需语义召回。
+    """核心信息强制注入（身份一致性），深层/浅层/场景按需语义召回。
 
-    三重上限：max_results（条数）、max_chars（字符预算）、timeout（超时）。
+    - core：按 priority 取 top N 强制注入，独立预算 core_max_chars
+    - relevant：深层相关（search）+ 场景 + 浅层，独立预算 max_chars
+    三重上限：max_results（条数）、max_chars（字符）、timeout（超时）。
     """
 
     def __init__(
@@ -18,7 +20,8 @@ class MemoryRetriever:
         max_results: int = 5,
         max_chars: int = 800,
         timeout: float = 3.0,
-        deep_inject_count: int = 20,
+        deep_inject_count: int = 5,
+        core_max_chars: int | None = None,
     ) -> None:
         self._deep_memory = deep_memory
         self._shallow_memory = shallow_memory
@@ -27,18 +30,22 @@ class MemoryRetriever:
         self._max_chars = max_chars
         self._timeout = timeout
         self._deep_inject_count = deep_inject_count
+        self._core_max_chars = core_max_chars if core_max_chars is not None else max_chars
 
     async def recall(self, query: str) -> str:
-        """召回：深层核心强制注入 + 浅层/场景按需召回，返回注入文本。"""
+        """召回：核心强制注入 + 深层/浅层/场景相关召回，返回注入文本。"""
         if not query:
             return ""
 
-        # 深层：核心信息强制注入（按 priority 取 top，不看相关性）
-        deep_results = self._deep_memory.list_all()
-        deep_results.sort(key=lambda x: x.get("priority", 0), reverse=True)
-        deep_results = deep_results[: self._deep_inject_count]
+        # 1. 核心：按 priority 强制注入 top N（不看相关性，保证身份一致性）
+        deep_all = self._deep_memory.list_all()
+        deep_all.sort(key=lambda x: x.get("priority", 0), reverse=True)
+        core_entries = deep_all[: self._deep_inject_count]
 
-        # 浅层/场景：按需语义召回
+        # 2. 相关召回：深层（search）+ 场景 + 浅层
+        deep_search = await self._search_layer(
+            self._deep_memory, query, top_k=self._max_results
+        )
         scene_results = (
             await self._search_layer(self._scene_memory, query, top_k=3)
             if self._scene_memory
@@ -48,19 +55,41 @@ class MemoryRetriever:
             self._shallow_memory, query, top_k=self._max_results
         )
 
-        total = 0
+        # core 独立预算
         core_out: list[str] = []
-        for r in deep_results:
+        core_total = 0
+        injected_keys: set[str] = set()
+        for r in core_entries:
             line = f"- [核心/{r.get('category', '')}] {r.get('value', '')}"
-            total = self._append_line(core_out, line, total)
+            if core_total + len(line) > self._core_max_chars:
+                continue
+            core_out.append(line)
+            core_total += len(line)
+            injected_keys.add(r.get("key"))
 
+        # relevant 独立预算；深层相关召回排除已在核心注入的 key
         relevant_out: list[str] = []
+        relevant_total = 0
+        for d in deep_search:
+            if d.get("key") in injected_keys:
+                continue
+            line = f"- [深层/{d.get('category', '')}] {d.get('value', '')}"
+            if relevant_total + len(line) > self._max_chars:
+                continue
+            relevant_out.append(line)
+            relevant_total += len(line)
         for s in scene_results:
             line = f"- [场景/{s.get('name', '')}] {s.get('summary', '')}"
-            total = self._append_line(relevant_out, line, total)
+            if relevant_total + len(line) > self._max_chars:
+                continue
+            relevant_out.append(line)
+            relevant_total += len(line)
         for e in shallow_results:
             line = f"- [浅层/{e.get('category', '')}] {e.get('content', '')}"
-            total = self._append_line(relevant_out, line, total)
+            if relevant_total + len(line) > self._max_chars:
+                continue
+            relevant_out.append(line)
+            relevant_total += len(line)
 
         parts: list[str] = []
         if core_out:
@@ -83,9 +112,3 @@ class MemoryRetriever:
         except Exception:
             return []
 
-    def _append_line(self, lines: list[str], line: str, total: int) -> int:
-        """字符预算内追加一行，返回新的累计字符数。"""
-        if total + len(line) > self._max_chars:
-            return total
-        lines.append(line)
-        return total + len(line)

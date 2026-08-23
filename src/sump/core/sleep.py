@@ -159,6 +159,14 @@ class SleepManager:
             await self.bus.emit(SleepEvents.CONSOLIDATE_INTERRUPTED)
             raise
 
+    async def consolidate_now(self) -> str:
+        """手动触发一次记忆整理（不依赖睡眠状态与时间窗口）。
+
+        供 API 端点 / CLI 命令 / 独立脚本调用；中断进行中的整理后立即执行。
+        """
+        self._interrupt_consolidation()
+        return await self._tool.execute()
+
     # ------------------------------------------------------------------
     # 时间窗口
     # ------------------------------------------------------------------

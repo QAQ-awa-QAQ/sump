@@ -1,5 +1,8 @@
 """记忆整理工具（睡眠中由生理机制调用）"""
 
+import logging
+import time
+from pathlib import Path
 from typing import Any
 
 from sump.config import Config
@@ -15,6 +18,8 @@ from sump.tools.base import Tool
 from sump.tools.builtin.deep_extraction import DeepExtractionTool
 from sump.tools.builtin.scene_aggregation import SceneAggregationTool
 from sump.tools.builtin.shallow_extraction import ShallowExtractionTool
+
+logger = logging.getLogger("sump.consolidation")
 
 
 class MemoryConsolidationTool(Tool):
@@ -32,6 +37,7 @@ class MemoryConsolidationTool(Tool):
     }
 
     def __init__(self, config: Config, llm: Any, deep_embedder: Any = None) -> None:
+        self._config = config
         self._llm = llm
         self._session_memory = SessionMemory(
             config.get("memory.session.db_path", "data/session.db")
@@ -57,6 +63,7 @@ class MemoryConsolidationTool(Tool):
         self._extractor = ShallowExtractionTool(
             llm, self._shallow_memory,
             priority_threshold=int(config.get("memory.shallow.priority_threshold", 60)),
+            owner_marker=config.get("memory.owner_marker", "") or None,
         )
         self._deep_extractor = DeepExtractionTool(
             llm, self._shallow_memory, self._deep_memory,
@@ -83,23 +90,37 @@ class MemoryConsolidationTool(Tool):
         archived_msgs = 0
         reports: list[str] = []
 
-        # 1. 会话 → 浅层（增量：只处理新消息）
+        # 1. 会话 → 浅层（增量：只处理新消息；失败会话保留待重试）
         msg_cursor = self._state.get("session_msg_id", 0)
         new_messages = self._session_memory.load_messages_since(msg_cursor)
+        failed_sessions = 0
         if new_messages:
             by_session: dict[str, list[dict[str, Any]]] = {}
             for m in new_messages:
                 by_session.setdefault(str(m["session_id"]), []).append(m)
             for sid, msgs in by_session.items():
                 name = self._session_memory.get_session_name(sid) or sid[:8]
-                extract_report = await self._extractor.execute(
+                ok, extract_report = await self._extractor.execute_checked(
                     session_id=sid, messages=msgs
                 )
+                if not ok:
+                    failed_sessions += 1
+                    logger.error(
+                        "会话 %s 提炼失败，保留消息待下次重试：%s", sid, extract_report
+                    )
+                    reports.append(f"{name}: {extract_report}（失败，保留待重试）")
+                    continue
                 archived_msgs += self._archive.archive_session(sid, name, msgs)
                 self._session_memory.delete_session(sid)
                 archived_sessions += 1
                 reports.append(f"{name}: {extract_report}")
-            self._state.set("session_msg_id", max(m["id"] for m in new_messages))
+            # 游标只在全部会话成功时推进；有失败则保留原游标，下次重试
+            if failed_sessions == 0:
+                self._state.set("session_msg_id", max(m["id"] for m in new_messages))
+            else:
+                logger.warning(
+                    "%d 个会话提炼失败，游标不推进，下次巩固重试", failed_sessions
+                )
 
         # 2. 场景聚合 + 浅层 → 深层（增量：只处理新浅层）
         shallow_cursor = self._state.get("shallow_id", 0)
@@ -129,6 +150,9 @@ class MemoryConsolidationTool(Tool):
         # 6. 灵魂/人格文件精简
         persona_report = await self._persona.compact(self._llm)
 
+        # 7. 清理超期 QQ 图片缓存
+        qq_cleanup = self._cleanup_qq_images()
+
         parts: list[str] = []
         if archived_sessions:
             parts.append(
@@ -140,11 +164,31 @@ class MemoryConsolidationTool(Tool):
         parts.append(f"矛盾检测：{conflict_report}")
         parts.append(f"容量保底：{overflow_report}")
         parts.append(f"过期回收：{retention_report}")
+        parts.append(f"QQ图片清理：删 {qq_cleanup} 张")
         parts.append(f"灵魂精简：{persona_report}")
         return "记忆整理完成：" + " | ".join(parts)
 
+    def _cleanup_qq_images(self) -> int:
+        """删除超过保留期的 QQ 图片缓存（按文件修改时间）。"""
+        image_dir = str(self._config.get("napcat.image_dir", "data/napcat_images"))
+        retention_days = int(self._config.get("napcat.image_retention_days", 7))
+        if retention_days < 1:
+            return 0
+        path = Path(image_dir)
+        if not path.is_dir():
+            return 0
+        cutoff = time.time() - retention_days * 86400
+        removed = 0
+        for f in path.iterdir():
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        return removed
+
     async def _compress_overflow(self) -> str:
-        """浅层/深层超上限时 LLM 压缩丢低价值（保底，遗忘曲线是主机制）。"""
         reports: list[str] = []
         shallow = self._shallow_memory.list_all_entries()
         if len(shallow) > self._max_shallow:

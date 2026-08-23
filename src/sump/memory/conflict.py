@@ -3,6 +3,8 @@
 import json
 from typing import Any
 
+from sump.memory._llm_json import chat_flash_json
+
 
 class ConflictResolver:
     """睡眠时审视深层记忆，解决互相矛盾的旧条目（保留较新、删除过时）。"""
@@ -28,10 +30,13 @@ class ConflictResolver:
 
     async def _resolve_batch(self, entries: list[dict[str, Any]]) -> int:
         """对一批条目做一次矛盾判断，返回解决的矛盾对数。"""
-        raw = await self._llm.chat_flash(
-            self._build_prompt(entries), max_tokens=1024, temperature=0.3
+        data = await chat_flash_json(
+            self._llm,
+            self._build_prompt(entries),
+            max_tokens=1024,
+            temperature=0.3,
+            label="conflict_resolver",
         )
-        data = self._parse_json(raw)
         if data is None:
             return 0
 

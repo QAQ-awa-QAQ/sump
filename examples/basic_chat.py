@@ -3,6 +3,8 @@
 import asyncio
 
 from sump.agent import Agent
+from sump.core.sleep import get_sleep_manager
+from sump.debug.logger import setup_logger
 
 
 RESET = "\033[0m"
@@ -11,6 +13,7 @@ YELLOW = "\033[33m"
 
 
 async def main():
+    setup_logger("INFO")
     agent = Agent()
 
     def security_prompt(command: str, summary: str, danger: str) -> bool:
@@ -26,7 +29,7 @@ async def main():
 
     agent.on_security_check = security_prompt
 
-    print("SUMP Agent 已启动（输入 exit 退出）\n")
+    print("SUMP Agent 已启动（输入 exit 退出，/consolidate 手动巩固记忆）\n")
 
     while True:
         try:
@@ -37,6 +40,14 @@ async def main():
         if user_input.lower() in ("exit", "quit", "q"):
             print("再见")
             break
+        if user_input == "/consolidate":
+            print("整理记忆中...")
+            try:
+                result = await get_sleep_manager().consolidate_now()
+                print(f"记忆整理完成：{result}")
+            except Exception as e:
+                print(f"记忆整理失败：{e}")
+            continue
         if not user_input:
             continue
 
