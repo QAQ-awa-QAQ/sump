@@ -29,3 +29,12 @@ class TestArchiveMemory:
         assert len(sessions) == 2
         names = {s["name"] for s in sessions}
         assert names == {"A", "B"}
+
+    def test_search(self, tmp_path):
+        archive = ArchiveMemory(str(tmp_path / "archive.db"))
+        archive.archive_session(
+            "s1", "A", [{"role": "user", "content": "用户喜欢 Python 编程"}]
+        )
+        results = archive.search("Python")
+        assert len(results) >= 1
+        assert "Python" in results[0]["content"]

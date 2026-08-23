@@ -25,9 +25,12 @@ class SceneAggregationTool(Tool):
         self._scene_memory = scene_memory
         self._max_chars_per_batch = max_chars_per_batch
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(
+        self, entries: list[dict[str, Any]] | None = None, **kwargs: Any
+    ) -> str:
         """聚合浅层记忆为场景块，返回结果描述。"""
-        entries = self._shallow_memory.list_all_entries()
+        if entries is None:
+            entries = self._shallow_memory.list_all_entries()
         if not entries:
             return "无浅层记忆可聚合"
 

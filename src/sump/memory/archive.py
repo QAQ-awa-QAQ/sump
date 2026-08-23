@@ -42,6 +42,13 @@ class ArchiveMemory:
                 CREATE INDEX IF NOT EXISTS idx_archive_session
                 ON archived_messages(session_id, id)
             """)
+            try:
+                db.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS archived_messages_fts
+                    USING fts5(session_id UNINDEXED, content, tokenize='trigram')
+                """)
+            except Exception:
+                pass
             db.commit()
         finally:
             db.close()
@@ -78,6 +85,13 @@ class ArchiveMemory:
                     for m in messages
                 ],
             )
+            try:
+                db.executemany(
+                    "INSERT INTO archived_messages_fts (session_id, content) VALUES (?, ?)",
+                    [(session_id, m.get("content", "")) for m in messages],
+                )
+            except Exception:
+                pass
             db.commit()
             return len(messages)
         finally:
@@ -120,3 +134,22 @@ class ArchiveMemory:
         return [
             {"id": r[0], "name": r[1], "msg_count": r[2]} for r in rows
         ]
+
+    def search(self, query: str, top_k: int = 10) -> list[dict[str, Any]]:
+        """FTS5 全文检索归档会话消息，返回命中消息（session_id + content）。"""
+        safe = query.replace('"', " ").strip()
+        if len(safe) < 2:
+            return []
+        db = self._conn()
+        try:
+            rows = db.execute(
+                "SELECT session_id, content FROM archived_messages_fts "
+                "WHERE archived_messages_fts MATCH ? "
+                "ORDER BY bm25(archived_messages_fts) LIMIT ?",
+                (f'"{safe}"', top_k),
+            ).fetchall()
+        except Exception:
+            return []
+        finally:
+            db.close()
+        return [{"session_id": r[0], "content": r[1]} for r in rows]

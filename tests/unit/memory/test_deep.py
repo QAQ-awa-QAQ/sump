@@ -82,3 +82,11 @@ class TestDeepMemoryEmbedding:
         db.commit()
         db.close()
         assert await deep.delete_expired(365) == 2
+
+    @pytest.mark.asyncio
+    async def test_access_touch(self, tmp_path):
+        deep = DeepMemory(str(tmp_path / "deep.db"), embedder=_FakeEmbedder())
+        await deep.store("k1", "内容A", priority=80, embedding=[1.0, 0.0, 0.0])
+        await deep.search("查询", query_embedding=[1.0, 0.0, 0.0])
+        entries = deep.list_all()
+        assert entries[0]["access_count"] == 1

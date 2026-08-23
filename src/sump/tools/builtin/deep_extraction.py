@@ -1,8 +1,8 @@
-"""深层记忆提取工具（浅层 → 深层）
+"""深层记忆提取工具（浅层 → 深层核心信息）
 
-用 flash 模型（不思考）对浅层记忆条目做三判断：
-1. 是否重要；2. 是否对用户未来对话产生重要影响；3. 是否有利于提升本智能体。
-三个条件【都】满足才升级到深层记忆，并从浅层删除。
+用 flash 模型（不思考）从浅层记忆条目识别核心信息：
+身份 / 核心偏好 / 长期约束 / 关键决策。
+深层容量极小，只放最重要的；识别出的核心信息升级到深层并从浅层删除。
 """
 
 import json
@@ -13,7 +13,7 @@ from sump.tools.base import Tool
 
 
 class DeepExtractionTool(Tool):
-    """浅层记忆 → 深层记忆 升级提取工具。"""
+    """浅层 → 深层核心信息提取工具（识别身份/偏好/约束/决策）。"""
 
     name = "deep_extraction"
     description = "从浅层记忆提炼深层记忆（重要且影响未来且有益）"
@@ -35,9 +35,12 @@ class DeepExtractionTool(Tool):
         self._priority_threshold = priority_threshold
         self._dedup = dedup or DeepDedup(llm, deep_memory)
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(
+        self, entries: list[dict[str, Any]] | None = None, **kwargs: Any
+    ) -> str:
         """升级浅层记忆到深层，返回结果描述。"""
-        entries = self._shallow_memory.list_all_entries()
+        if entries is None:
+            entries = self._shallow_memory.list_all_entries()
         if not entries:
             return "无浅层记忆可升级"
 
@@ -82,14 +85,9 @@ class DeepExtractionTool(Tool):
             if not self._is_valid_id(entry_id):
                 continue
 
-            important = bool(d.get("important", False))
-            affects_future = bool(d.get("affects_future", False))
-            beneficial_agent = bool(d.get("beneficial_agent", False))
             priority = self._parse_priority(d.get("priority"))
 
-            # AND 规则：三个维度都满足且 priority 达标才升级
-            if not (important and affects_future and beneficial_agent):
-                continue
+            # 核心信息：priority 达标才升级
             if priority < self._priority_threshold:
                 continue
 
@@ -103,9 +101,6 @@ class DeepExtractionTool(Tool):
                 "content": entry["content"],
                 "category": entry["category"],
                 "priority": priority,
-                "important": important,
-                "affects_future": affects_future,
-                "beneficial_agent": beneficial_agent,
             })
 
         if not candidates:
@@ -134,9 +129,6 @@ class DeepExtractionTool(Tool):
                 metadata={
                     "source": "shallow_entry",
                     "shallow_entry_id": c["id"],
-                    "important": c["important"],
-                    "affects_future": c["affects_future"],
-                    "beneficial_agent": c["beneficial_agent"],
                 },
             )
             # 升级后从浅层删除（层级腾空）
@@ -175,21 +167,21 @@ class DeepExtractionTool(Tool):
         return f"id={e['id']} 类别={e['category']} 内容={e['content']}"
 
     def _build_prompt(self, entries: list[dict[str, Any]]) -> str:
-        """把一批浅层条目拼成判断 prompt。"""
+        """把一批浅层条目拼成核心信息识别 prompt。"""
         lines = [self._format_entry(e) for e in entries]
         return (
-            "以下是一些浅层记忆条目，每条含 id 与内容。请逐条判断：\n"
-            "1. 是否重要\n"
-            "2. 是否会对用户未来对话产生重要影响\n"
-            "3. 是否有利于提升本智能体\n"
-            "三个条件【都】满足的条目才升级到深层记忆。\n"
-            "每条还要打 priority（0-100 整数，深层标准更高）：\n"
-            "90-100=核心特质/关键决策，70-89=重要事件/稳定偏好，<70=暂不升级。\n"
+            "以下是一些浅层记忆条目。请识别出其中的【核心信息】——深层记忆容量极小，只放最重要的。\n"
+            "核心信息包括四类：\n"
+            "1. 用户身份（是谁、做什么、角色定位）\n"
+            "2. 核心偏好（长期稳定、影响所有对话的偏好）\n"
+            "3. 长期约束（必须遵守的规则、底线、禁忌）\n"
+            "4. 关键决策（重大决定、长期有效的结论）\n"
+            "普通事实、临时事件留在浅层，不要升级。\n"
+            "每条核心信息打 priority（0-100，越核心越高；<70 不升级）。\n"
             "只依据条目内容判断，不要胡编乱造、不要臆测。\n\n"
             "只输出 JSON，不要 markdown 代码块、不要解释：\n"
-            '{"items": [{"id": 条目id, "important": true, '
-            '"affects_future": true, "beneficial_agent": true, "priority": 85}]}\n'
-            "只列出三个条件都满足且 priority>=70 的条目；没有则 items 输出空数组 []。\n\n"
+            '{"items": [{"id": 条目id, "priority": 90}]}\n'
+            "没有核心信息则 items 输出空数组 []。\n\n"
             "条目：\n" + "\n".join(lines)
         )
 

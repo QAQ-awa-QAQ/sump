@@ -79,12 +79,15 @@ SUMP 的最终形态是接入 QQ、微信的**全能个人助手**：
 - ✅ 安全审查系统（Judge 规则匹配 + LLM Flash 分析 + Interceptor 裁决 → 前端审批）
 - ✅ 前端审批弹窗（safe/risky 自适应样式，拒绝/同意按钮）
 - ✅ 多轮工具调用链式审批 + LLM 多 tool_calls 裁剪
-- ✅ 记忆系统四层架构（L0 会话 → L1 浅层 → L2 场景 → L3 深层）
-- ✅ 本地 embedding（fastembed + bge-small-zh-v1.5，离线零 API 依赖）
-- ✅ 记忆提取三判断（重要 / 影响下次 / 有益）+ priority 打分剪枝（低价值丢弃）
-- ✅ 记忆冲突检测（store / update / merge / skip）+ 过期回收（80% 安全阈值）
-- ✅ 混合检索（FTS5 BM25 + 向量余弦 + RRF 融合）+ 召回注入（条数/字符/超时三重上限）
-- ✅ 睡眠巩固编排（提炼 → 场景聚合 → 深层升级 → 归档 → 过期回收 → 灵魂精简）
+- ✅ 记忆四层（按重要性分层）：L0 会话 → L1 浅层（按需唤醒）→ L2 场景 → L3 深层核心
+- ✅ 深层核心信息（身份/核心偏好/长期约束/关键决策，容量 50 条，每次对话强制注入 top 20 确保一致性）
+- ✅ 本地 embedding（fastembed + bge-small-zh-v1.5，离线零 API 依赖 + 启动预下载）
+- ✅ priority 打分剪枝 + 遗忘曲线（访问频次加权，越用越牢、越不用越忘）
+- ✅ 记忆冲突检测（store/update/merge/skip）+ 矛盾检测 + 过期回收（80% 安全阈值）
+- ✅ 混合检索（FTS5 BM25 + 向量余弦 + RRF）+ 召回三重上限（条数/字符/超时）
+- ✅ 纯增量睡眠巩固（游标推进只处理新增，超限才 LLM 压缩丢低价值）
+- ✅ 归档通道（历史会话 FTS5 全文检索，不再是黑洞）
+- ✅ 工作记忆（跨会话任务进度：flash 摘要 goal + 工具结果 note）
 - ✅ 灵魂注入（SOUL.md / AGENTS.md → system prompt + 睡眠精简备份）
 - ✅ MCP 客户端（Model Context Protocol 工具接入）
 - ✅ uv 依赖管理 + uv.lock 锁版本 + mypy 静态类型检查

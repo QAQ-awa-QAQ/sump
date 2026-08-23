@@ -20,13 +20,18 @@ memory:
     db_path: "data/deep.db"
     embedding_model: "BAAI/bge-small-zh-v1.5"   # 本地 embedding 模型
     embedding_cache: "data/models"               # 模型缓存目录（首次联网下载后离线可用）
-    priority_threshold: 70                       # 深层升级阈值（<70 不升级）
+    priority_threshold: 70                       # 核心信息升级阈值（<70 不升级）
+    inject_count: 20                             # 强制注入条数（按 priority 取 top，确保一致性）
     top_k: 10
   scene:
     db_path: "data/scene.db"            # L2 场景层（浅层原子记忆的聚合总结）
   archive:
     db_path: "data/archive.db"           # 历史会话归档副本（提取后从会话记忆移入，智能体不可见）
+  state:
+    db_path: "data/state.db"             # 巩固增量游标（session_msg_id / shallow_id）
   retention_days: 365                    # 记忆保留天数（<3 禁用回收；80% 安全阈值防误删）
+  max_shallow_entries: 2000              # 浅层条数上限（超限触发 LLM 压缩保底）
+  max_deep_entries: 50                   # 深层条数上限（核心信息，严格限制大小）
   recall:
     max_results: 5                       # 召回注入条数上限
     max_chars: 800                       # 召回注入字符预算

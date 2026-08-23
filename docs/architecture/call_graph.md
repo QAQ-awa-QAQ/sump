@@ -212,37 +212,46 @@ Vite + TypeScript SPA (src/frontend/)
 
 ### 7. 记忆系统（memory/）
 
-| 类 | 状态 | 核心方法 |
-|----|------|----------|
-| `MemoryProvider` (ABC) | ✅ | `store / retrieve / forget / clear` |
-| `WorkingMemory` | ✅ | 任务便签（目标 + 过程记录，内存/SQLite 双后端 + 字节上限） |
-| `SessionMemory` | ✅ | SQLite（save / load / load_all / list / delete / count / delete_oldest / upsert_session_name / update_tool_message） |
-| `ShallowMemory` | ✅ | SQLite 分类条目 + priority 打分 + 过期回收（80% 阈值） |
-| `DeepMemory` | ✅ | SQLite + priority + FTS5 BM25 + 向量余弦 RRF 混合检索 + 过期回收 |
-| `SceneMemory` | ✅ | L2 场景层（name + summary，按 priority 排序，过期回收） |
-| `ArchiveMemory` | ✅ | 历史会话归档副本（智能体不可见） |
-| `Embedder` | ✅ | 本地 embedding（fastembed + bge-small-zh，单例加载） |
-| `PersonaManager` | ✅ | SOUL.md / AGENTS.md 注入 system prompt + 睡眠精简（.bak 备份） |
-| `MemoryRetriever` | ✅ | 深层/浅层召回 + 条数/字符/超时三重上限 |
-| `DeepDedup` | ✅ | store / update / merge / skip 冲突检测 |
-| `TaskMemory` | ✅ | 会话级 + scratchpad 便签 |
-| `MemoryCompressor` | ⚠️ | 会话记忆压缩（flash 评估待实现） |
+四层按**重要性**分层：深层=核心信息（强制注入）、浅层=一般信息（按需唤醒）、场景=聚合上下文、会话=原始对话。
 
-> 睡眠巩固链路（SleepManager 深睡触发）：
+| 类 | 层 | 说明 |
+|----|----|------|
+| `SessionMemory` | L0 | 会话消息 SQLite + 增量读取（`load_messages_since`） |
+| `ShallowMemory` | L1 | 一般信息（事实/事件），priority + 向量语义检索 + 过期回收 |
+| `SceneMemory` | L2 | 聚合上下文（name+summary），向量检索 + 过期回收 |
+| `DeepMemory` | L3 | 核心信息（身份/偏好/约束/决策），FTS5 BM25 + 向量 RRF + 遗忘曲线 |
+| `ArchiveMemory` | - | 历史会话归档副本 + FTS5 全文检索通道 |
+| `WorkingMemory` | - | 跨会话任务进度（goal 摘要 + note） |
+| `Embedder` | - | 本地 embedding（bge-small-zh，单例 + 预下载） |
+| `PersonaManager` | - | SOUL.md / AGENTS.md 注入 + 睡眠精简 |
+| `MemoryRetriever` | - | 深层强制注入 + 浅层/场景按需召回 + 三重上限 |
+| `DeepDedup` | - | store / update / merge / skip 冲突检测 |
+| `ConflictResolver` | - | 深层旧条目矛盾检测 |
+| `ConsolidationState` | - | 增量游标（session_msg_id / shallow_id） |
+| `MemoryProvider` (ABC) | - | `store / retrieve / forget / clear` |
+
+> 睡眠巩固链路（纯增量，游标推进只处理新增）：
 >
 > ```
 > SleepManager._run_consolidation()
 >   └─ MemoryConsolidationTool.execute()
->        ├─ 每个会话：ShallowExtractionTool（OR 三判断 + priority 剪枝）
+>        ├─ 会话 → 浅层（增量：id>游标新消息，OR 三判断 + priority 剪枝）
 >        ├─ ArchiveMemory 归档 + SessionMemory 清除
->        ├─ SceneAggregationTool（浅层 → L2 场景块）
->        ├─ DeepExtractionTool（AND 三判断 + priority + DeepDedup 四动作）
->        ├─ ShallowMemory / DeepMemory / SceneMemory delete_expired（80% 阈值）
->        └─ PersonaManager.compact（灵魂文件精简）
+>        ├─ SceneAggregationTool（增量：浅层 → L2 场景块）
+>        ├─ DeepExtractionTool（增量：识别核心信息 + priority + DeepDedup 四动作）
+>        ├─ ConflictResolver（深层矛盾检测）
+>        ├─ 容量保底（超 max_entries 时 LLM 压缩丢低价值）
+>        ├─ delete_expired（三层，80% 阈值 + 遗忘曲线）
+>        └─ PersonaManager.compact（灵魂精简）
 >
 > 召回注入链路（每次对话）：
-> Agent._inject_context() → MemoryRetriever.recall()
->   → DeepMemory.search（BM25 + 向量 + RRF）→ system prompt
+> Agent._inject_context()
+>   ├─ persona.get_system_prompt()（灵魂）
+>   ├─ working_memory（进行中任务）
+>   └─ MemoryRetriever.recall(query)
+>        ├─ DeepMemory.list_all → priority top N → <core-memories>（强制注入）
+>        └─ ShallowMemory / SceneMemory.search → <relevant-memories>（按需召回）
+>   → system prompt → LLM
 > ```
 
 ---

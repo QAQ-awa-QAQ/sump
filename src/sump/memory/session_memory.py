@@ -80,6 +80,35 @@ class SessionMemory:
 
         return self._parse_rows(rows)
 
+    def load_messages_since(self, min_id: int, limit: int = 1000) -> list[dict[str, Any]]:
+        """加载 id > min_id 的全部会话消息（跨 session，按 id 正序，含 session_id 与 id）。"""
+        db = self._conn()
+        try:
+            rows = db.execute(
+                "SELECT session_id, role, content, tool_call_id, tool_calls, reasoning_content, id "
+                "FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?",
+                (min_id, limit),
+            ).fetchall()
+        finally:
+            db.close()
+
+        result: list[dict[str, Any]] = []
+        for session_id, role, content, tci, tcs, reasoning, mid in rows:
+            entry: dict[str, Any] = {
+                "session_id": session_id,
+                "role": role,
+                "content": content,
+                "id": mid,
+            }
+            if tci:
+                entry["tool_call_id"] = tci
+            if tcs:
+                entry["tool_calls"] = json.loads(tcs)
+            if reasoning:
+                entry["reasoning_content"] = reasoning
+            result.append(entry)
+        return result
+
     @staticmethod
     def _parse_rows(rows: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
         """把查询行（按 id 倒序）转为消息字典列表（按时间正序）。"""

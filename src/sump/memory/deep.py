@@ -57,10 +57,14 @@ class DeepMemory(MemoryProvider):
                     priority INTEGER NOT NULL DEFAULT 0,
                     embedding TEXT DEFAULT '',
                     metadata TEXT DEFAULT '{}',
+                    access_count INTEGER NOT NULL DEFAULT 0,
+                    last_access REAL NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL
                 )
             """)
             self._ensure_column(db, "deep_memory", "priority", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(db, "deep_memory", "access_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(db, "deep_memory", "last_access", "REAL NOT NULL DEFAULT 0")
             db.execute("""
                 CREATE INDEX IF NOT EXISTS idx_deep_category
                 ON deep_memory(category)
@@ -186,7 +190,7 @@ class DeepMemory(MemoryProvider):
         db = self._conn()
         try:
             rows = db.execute(
-                "SELECT key, value, category, priority, embedding, metadata, created_at "
+                "SELECT key, value, category, priority, embedding, metadata, access_count, last_access, created_at "
                 "FROM deep_memory ORDER BY created_at DESC"
             ).fetchall()
             bm25_ranks = self._bm25_ranks(db, query) if query else {}
@@ -197,7 +201,7 @@ class DeepMemory(MemoryProvider):
             return []
 
         results: list[dict[str, Any]] = []
-        for key, value, category, priority, emb_json, meta_json, created_at in rows:
+        for key, value, category, priority, emb_json, meta_json, access_count, last_access, created_at in rows:
             results.append({
                 "key": key,
                 "value": json.loads(value),
@@ -205,6 +209,8 @@ class DeepMemory(MemoryProvider):
                 "priority": priority,
                 "embedding": json.loads(emb_json) if emb_json else [],
                 "metadata": json.loads(meta_json),
+                "access_count": access_count,
+                "last_access": last_access,
                 "created_at": created_at,
                 "score": 0.0,
             })
@@ -213,8 +219,11 @@ class DeepMemory(MemoryProvider):
         if query_embedding:
             vector_ranks = self._vector_ranks(results, query_embedding)
         self._rrf_fuse(results, vector_ranks, bm25_ranks)
+        self._apply_access_weight(results)
 
-        return results[:top_k]
+        result = results[:top_k]
+        self._touch(result)
+        return result
 
     async def search_by_category(
         self, category: str, limit: int = 20
@@ -240,6 +249,31 @@ class DeepMemory(MemoryProvider):
                 "embedding": json.loads(r[4]) if r[4] else [],
                 "metadata": json.loads(r[5]),
                 "created_at": r[6],
+            }
+            for r in rows
+        ]
+
+    def list_all(self) -> list[dict[str, Any]]:
+        """列出全部深层记忆（按创建时间倒序）。"""
+        db = self._conn()
+        try:
+            rows = db.execute(
+                "SELECT key, value, category, priority, embedding, metadata, access_count, last_access, created_at "
+                "FROM deep_memory ORDER BY created_at DESC"
+            ).fetchall()
+        finally:
+            db.close()
+        return [
+            {
+                "key": r[0],
+                "value": json.loads(r[1]),
+                "category": r[2],
+                "priority": r[3],
+                "embedding": json.loads(r[4]) if r[4] else [],
+                "metadata": json.loads(r[5]),
+                "access_count": r[6],
+                "last_access": r[7],
+                "created_at": r[8],
             }
             for r in rows
         ]
@@ -310,19 +344,26 @@ class DeepMemory(MemoryProvider):
     # ------------------------------------------------------------------
 
     async def delete_expired(self, retention_days: int) -> int:
-        """删除超过保留期的深层记忆；80% 安全阈值防误删，返回删除条数。"""
+        """删除过期深层记忆；从未访问的按一半保留期删除；80% 安全阈值防误删。"""
         if retention_days < 3:
             return 0
         cutoff = time.time() - retention_days * 86400
+        half_cutoff = time.time() - (retention_days / 2) * 86400
         db = self._conn()
         try:
             total = db.execute("SELECT COUNT(*) FROM deep_memory").fetchone()[0]
             expired = db.execute(
-                "SELECT COUNT(*) FROM deep_memory WHERE created_at < ?", (cutoff,)
+                "SELECT COUNT(*) FROM deep_memory WHERE created_at < ? "
+                "OR (access_count = 0 AND created_at < ?)",
+                (cutoff, half_cutoff),
             ).fetchone()[0]
             if total == 0 or expired / total > 0.8:
                 return 0
-            cur = db.execute("DELETE FROM deep_memory WHERE created_at < ?", (cutoff,))
+            cur = db.execute(
+                "DELETE FROM deep_memory WHERE created_at < ? "
+                "OR (access_count = 0 AND created_at < ?)",
+                (cutoff, half_cutoff),
+            )
             try:
                 db.execute(
                     "DELETE FROM deep_memory_fts WHERE key NOT IN (SELECT key FROM deep_memory)"
@@ -392,6 +433,26 @@ class DeepMemory(MemoryProvider):
                 score += 1.0 / (k + bm25_ranks[r["key"]])
             r["score"] = score
         results.sort(key=lambda x: x["score"], reverse=True)
+
+    @staticmethod
+    def _apply_access_weight(results: list[dict[str, Any]], k: float = 0.1) -> None:
+        """访问频次加权：越常召回越靠前（遗忘曲线的巩固效应）。"""
+        for r in results:
+            r["score"] = r["score"] * (1 + k * math.log1p(r.get("access_count", 0)))
+
+    def _touch(self, results: list[dict[str, Any]]) -> None:
+        """召回即访问：被召回的记忆 access_count+1、刷新 last_access。"""
+        if not results:
+            return
+        db = self._conn()
+        try:
+            db.executemany(
+                "UPDATE deep_memory SET access_count = access_count + 1, last_access = ? WHERE key = ?",
+                [(time.time(), r["key"]) for r in results],
+            )
+            db.commit()
+        finally:
+            db.close()
 
     @staticmethod
     def _fts_upsert(db: sqlite3.Connection, key: str, content: str) -> None:

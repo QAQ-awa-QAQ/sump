@@ -34,6 +34,10 @@ class Embedder:
             result.append([float(x) for x in arr])
         return result
 
+    def preload(self) -> None:
+        """预热：主动加载模型（首次会联网下载，之后离线可用）。"""
+        self._load_model()
+
     def _load_model(self) -> Any:
         """懒加载模型，进程内只加载一次。"""
         if Embedder._model is None:
@@ -46,3 +50,12 @@ class Embedder:
                         kwargs["cache_dir"] = self._cache_dir
                     Embedder._model = TextEmbedding(**kwargs)
         return Embedder._model
+
+
+def cosine_scores(query_embedding: list[float], matrix: np.ndarray) -> np.ndarray:
+    """批量余弦相似度：query (d,) 与 matrix (n, d) → 分数 (n,)。"""
+    q = np.asarray(query_embedding, dtype=np.float32)
+    q_norm = float(np.linalg.norm(q))
+    denom = np.linalg.norm(matrix, axis=1) * q_norm
+    denom[denom == 0] = 1e-12
+    return (matrix @ q) / denom

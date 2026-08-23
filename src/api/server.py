@@ -1,5 +1,6 @@
 """SUMP API 服务入口"""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 
@@ -8,12 +9,23 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import router
 from sump.core.sleep import get_sleep_manager
+from sump.memory.embedder import Embedder
+
+
+def _warm_embedder(cache_dir: str | None) -> None:
+    """后台预热 embedding 模型（首次会下载）。"""
+    try:
+        Embedder(cache_dir=cache_dir).preload()
+    except Exception:
+        pass
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """服务生命周期：启动睡眠生理节拍，关闭时中断。"""
+    """服务生命周期：启动睡眠生理节拍 + 后台预下载模型，关闭时中断。"""
     await get_sleep_manager().start()
+    cache_dir = get_sleep_manager().config.get("memory.deep.embedding_cache", None)
+    asyncio.create_task(asyncio.to_thread(_warm_embedder, cache_dir))
     yield
     await get_sleep_manager().stop()
 

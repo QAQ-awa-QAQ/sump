@@ -6,6 +6,7 @@ from sump.memory.archive import ArchiveMemory
 from sump.memory.deep import DeepMemory
 from sump.memory.session_memory import SessionMemory
 from sump.memory.shallow import ShallowMemory
+from sump.memory.state import ConsolidationState
 from sump.tools.builtin.memory_consolidation import MemoryConsolidationTool
 
 
@@ -32,8 +33,9 @@ class _FakeEmbedder:
 class TestMemoryConsolidation:
     @pytest.mark.asyncio
     async def test_consolidate_full_flow(self, config, tmp_path):
-        # 隔离 archive 路径（其余 memory.* 已由 conftest 隔离到 tmp_path）
+        # 隔离 archive 与 state 路径（其余 memory.* 已由 conftest 隔离到 tmp_path）
         config._data["memory"]["archive"] = {"db_path": str(tmp_path / "archive.db")}
+        config._data["memory"]["state"] = {"db_path": str(tmp_path / "state.db")}
 
         session_path = config.get("memory.session.db_path")
         shallow_path = config.get("memory.shallow.db_path")
@@ -69,3 +71,28 @@ class TestMemoryConsolidation:
         # 深层已存入
         deep = DeepMemory(deep_path, embedder=_FakeEmbedder())
         assert await deep.retrieve("shallow:1") == "用户喜欢 Python"
+
+    @pytest.mark.asyncio
+    async def test_incremental_no_reprocess(self, config, tmp_path):
+        config._data["memory"]["archive"] = {"db_path": str(tmp_path / "archive.db")}
+        config._data["memory"]["state"] = {"db_path": str(tmp_path / "state.db")}
+
+        session_mem = SessionMemory(config.get("memory.session.db_path"))
+        session_mem.save_message("s1", "user", "你好")
+        session_mem.upsert_session_name("s1", "测试")
+
+        llm = _SeqLLM([
+            '{"important": false, "affects_next": false, "beneficial": false, "memories": []}',
+            '{"scenes": []}',
+            '{"items": []}',
+            '{"conflicts": []}',
+        ])
+        tool = MemoryConsolidationTool(config, llm, deep_embedder=_FakeEmbedder())
+        await tool.execute()
+
+        state = ConsolidationState(config.get("memory.state.db_path"))
+        assert state.get("session_msg_id", 0) == 1
+
+        # 第二次执行：游标已推进，不再重复处理
+        result2 = await tool.execute()
+        assert "无新浅层记忆" in result2

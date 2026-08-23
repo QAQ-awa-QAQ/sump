@@ -7,6 +7,19 @@ from sump.memory.shallow import ShallowMemory
 from sump.tools.builtin.scene_aggregation import SceneAggregationTool
 
 
+class _KeywordEmbedder:
+    """按关键词映射到固定向量。"""
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        result = []
+        for t in texts:
+            if "Python" in t:
+                result.append([1.0, 0.0, 0.0])
+            else:
+                result.append([0.0, 1.0, 0.0])
+        return result
+
+
 class _FakeLLM:
     def __init__(self, raw: str) -> None:
         self.raw = raw
@@ -32,6 +45,13 @@ class TestSceneMemory:
         scenes = scene.list_scenes()
         assert len(scenes) == 1
         assert scenes[0]["summary"] == "新总结"
+
+    def test_search_vector(self, tmp_path):
+        scene = SceneMemory(str(tmp_path / "scene.db"), embedder=_KeywordEmbedder())
+        scene.upsert_scene("开发", "用户在写 Python", priority=50)
+        scene.upsert_scene("生活", "用户喜欢做饭", priority=90)
+        results = scene.search("Python")
+        assert results[0]["name"] == "开发"
 
 
 class TestSceneAggregationTool:
