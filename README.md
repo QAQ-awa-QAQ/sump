@@ -104,6 +104,9 @@ SUMP 的最终形态是接入 QQ、微信的**全能个人助手**：
 - ✅ Shell 平台配置化（windows / linux / auto / 自定义提示词）
 - ✅ DeepSeek V4 XML 工具调用解析兜底
 - ✅ uv 依赖管理 + uv.lock 锁版本 + mypy 静态类型检查
+- ✅ SearXNG 搜索接入（MCP 元搜索引擎，自托管免费，聚合 Google/Bing/百度等）
+- ✅ 智能家居控制抽象层（SmartHomeBackend 可插拔后端，预留 HA / MQTT / 米家 / 涂鸦）
+- ✅ Docker 部署支持（多阶段构建单容器，前后端一体 + docker-compose + 数据卷持久化）
 
 ### 规划中
 
@@ -152,6 +155,20 @@ uv run uvicorn api.server:app --host 0.0.0.0 --port 8765
 # 启动前端
 cd src/frontend && npm install && npm run dev  # → http://localhost:5173
 ```
+
+### Docker 部署（生产推荐）
+
+```powershell
+# 设置 API Key
+$env:DEEPSEEK_API_KEY = "你的key"
+
+# 构建并启动（单容器，前端 + API 同端口）
+docker compose up -d --build
+
+# 访问 http://localhost:8765
+```
+
+数据持久化：`./data`（记忆/日志/模型）与 `./skills`（技能）自动挂载，重建容器不丢失。
 
 ## 许可证
 

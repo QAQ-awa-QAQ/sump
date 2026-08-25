@@ -62,8 +62,22 @@ tools:
     web: {enabled: true, timeout: 10}
     datetime: {enabled: true}
   mcp:
-    enabled: false
-    servers: []
+    enabled: true                       # 接入 MCP 服务器工具（SearXNG 搜索）
+    servers:
+      - name: "searxng"                 # SearXNG 元搜索引擎（聚合 Google/Bing/百度等，自托管免费）
+        command: "npx"                  # 跨平台：Windows 自动经 cmd 包装，Linux/macOS 直调
+        args: ["-y", "mcp-searxng"]
+        env:
+          SEARXNG_URL: "http://localhost:1010"   # SearXNG 实例地址
+
+smart_home:
+  backend: "none"                      # 智能家居后端：none / ha / mqtt（未来扩展 mihome / tuya）
+  ha:                                  # Home Assistant（backend: ha 时生效，跑在 7×24 主机）
+    url: "http://127.0.0.1:8123"
+    token: ""                          # HA 长期访问令牌（敏感值放 configs/local.yaml）
+  mqtt:                                # MQTT 总线（backend: mqtt 时生效，mosquitto 跑在 OpenWrt）
+    host: "127.0.0.1"
+    port: 1883
 
 skills:
   auto_create: true

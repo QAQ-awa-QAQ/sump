@@ -22,6 +22,7 @@ from sump.memory.shallow import ShallowMemory
 from sump.memory.working import WorkingMemory
 from sump.skills.creator import SkillCreator
 from sump.skills.manager import SkillManager
+from sump.smart_home import from_config
 from sump.tools.builtin.image_vision import ImageVisionTool
 from sump.tools.builtin.shell import ShellTool
 from sump.tools.mcp.client import MCPClient
@@ -97,6 +98,9 @@ class Agent:
         )
         # MCP 客户端（延迟连接，由 connect_mcp 按配置建立）
         self.mcp = MCPClient()
+        self._mcp_connected = False
+        # 智能家居后端（可插拔，当前 none 占位）
+        self.smart_home = from_config(self.config)
 
         self.ctx.on_message = self._persist_message
         self._load_session(self._session_id)
@@ -294,6 +298,7 @@ class Agent:
         self, user_input: str
     ) -> AsyncGenerator[dict[str, Any], None]:
         """执行一轮对话。流程: 更新工作记忆 -> 注入人格/记忆 -> 用户消息 -> Planner -> Executor。"""
+        await self._ensure_mcp_connected()
         await self._update_working_memory(user_input)
         await self._inject_context(user_input)
         self.ctx.add_user_message(user_input)
@@ -355,10 +360,24 @@ class Agent:
                 content="".join(reply_parts),
             )
 
+    async def _ensure_mcp_connected(self) -> None:
+        """首次运行时按配置连接 MCP 服务器（幂等，失败不阻断主流程）。"""
+        if self._mcp_connected:
+            return
+        self._mcp_connected = True
+        try:
+            registered = await self.connect_mcp()
+        except Exception as e:  # noqa: BLE001
+            print(f"[MCP] 连接失败（搜索工具不可用）: {e}", flush=True)
+            return
+        if registered:
+            print(f"[MCP] 已注册工具: {registered}", flush=True)
+
     async def connect_mcp(self) -> list[str]:
         """按配置连接 MCP 服务器并把其工具注册进 ToolRegistry。"""
         if not bool(self.config.get("tools.mcp.enabled", False)):
             return []
+        from sump.tools.mcp.sandbox import Sandbox
         from sump.tools.mcp.tool import register_mcp_tools
 
         servers = self.config.get("tools.mcp.servers", []) or []
@@ -368,7 +387,9 @@ class Agent:
             if not name:
                 continue
             await self.mcp.connect(name, server)
-            registered.extend(await register_mcp_tools(self.tools, self.mcp, name))
+            registered.extend(await register_mcp_tools(
+                self.tools, self.mcp, name, sandbox=Sandbox()
+            ))
         return registered
 
     async def _inject_context(self, user_input: str) -> None:

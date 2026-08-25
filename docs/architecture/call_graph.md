@@ -1,6 +1,6 @@
 # SUMP 函数调用关系图
 
-> 版本: v0.2.0 | 更新: 2026-08-23
+> 版本: v0.2.0 | 更新: 2026-08-25
 
 ---
 
@@ -52,6 +52,7 @@ graph TD
     A -->|实例化| SHM[memory/shallow.py<br/>ShallowMemory]
     A -->|实例化| DPM[memory/deep.py<br/>DeepMemory]
     A -->|实例化| RTR[memory/retriever.py<br/>MemoryRetriever]
+    A -->|实例化| SMH[smart_home/__init__.py<br/>SmartHomeBackend]
     A -->|委托| PL[core/planner.py<br/>Planner]
     A -->|委托| EX[core/executor.py<br/>Executor]
 
@@ -99,6 +100,7 @@ graph TD
     style MEM fill:#7ed321,color:#fff
     style ST fill:#e74c3c,color:#fff
     style MCP fill:#e74c3c,color:#fff
+    style SMH fill:#e74c3c,color:#fff
     style FE fill:#6366F1,color:#fff
     style WEB fill:#22C55E,color:#fff
 ```
@@ -284,7 +286,7 @@ Vite + TypeScript SPA (src/frontend/)
 | `ToolRegistry` | ✅ | 注册/获取/列出/schema 导出 |
 | `ShellTool` | ✅ | `subprocess` 执行，平台可配（windows/linux/auto），30s 超时 |
 | `ImageVisionTool` | ✅ | 视觉模型识图（本地路径转 base64 / URL） |
-| `MCPClient` | ✅ | MCP 协议：JSON-RPC 2.0 + stdio + 多服务器 + 工具发现 |
+| `MCPClient` | ✅ | MCP 协议：JSON-RPC 2.0 + stdio + 多服务器 + 工具发现 + Windows 自动 cmd 包装 |
 | `MCPTool` / `register_mcp_tools` | ✅ | MCP 工具包装 + inputSchema 转 OpenAI + 自动注册 |
 | `Sandbox` | ✅ | 超时 + 异常隔离执行 |
 | `DateTimeTool` | ⚠️ | 桩 |
@@ -343,6 +345,22 @@ Vite + TypeScript SPA (src/frontend/)
 | `setup_logger()` | ✅ | 分级日志初始化 |
 | `Tracer` | ⚠️ | span 记录（桩） |
 | `KeyOutput` | ⚠️ | 关键输出格式化（桩） |
+
+---
+
+### 13. 智能家居（smart_home/）
+
+可插拔后端抽象：SUMP 只依赖接口，未来接 Home Assistant / MQTT / 米家 / 涂鸦，只需新增 Adapter + 改配置。
+
+| 类 | 状态 | 说明 |
+|----|------|------|
+| `SmartHomeBackend` (ABC) | ✅ | `list_devices` / `get_state` / `set_state` / `call_service` |
+| `Device` / `State` | ✅ | 设备与状态数据模型（dataclass） |
+| `NoneBackend` | ✅ | 占位实现（未接入时返回空 / False） |
+| `from_config(config)` | ✅ | 按 `smart_home.backend` 创建后端（当前仅 none） |
+
+> 扩展路径：`configs/default.yaml` 的 `smart_home.backend` 切换 `none` / `ha` / `mqtt`；
+> 未来写 `HAAdapter` / `MQTTAdapter` 实现 `SmartHomeBackend` 四个方法即可，SUMP 主体不动。
 
 ---
 

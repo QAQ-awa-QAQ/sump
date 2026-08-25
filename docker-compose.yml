@@ -1,0 +1,13 @@
+services:
+  sump:
+    build: .
+    container_name: sump
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - SUMP_ENV=${SUMP_ENV:-production}
+    volumes:
+      - ./data:/app/data        # 记忆/日志/模型持久化
+      - ./skills:/app/skills    # 技能持久化

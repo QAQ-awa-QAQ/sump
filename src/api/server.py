@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from api.routes import router
 from sump.core.sleep import SleepManager, get_sleep_manager
@@ -80,6 +81,12 @@ def create_app() -> FastAPI:
         return await call_next(request)
 
     app.include_router(router)
+
+    # 前端静态文件（存在则挂载，支持 Docker 单容器部署；开发模式 vite dev 时不触发）
+    frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    if frontend_dist.is_dir():
+        app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+
     return app
 
 

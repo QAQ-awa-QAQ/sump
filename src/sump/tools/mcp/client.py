@@ -33,8 +33,15 @@ class MCPServerConnection:
         merged_env = os.environ.copy()
         merged_env.update(self.env)
 
+        # Windows 上 npx/uvx 等是 .cmd 脚本，需经 cmd.exe 包装才能用 CreateProcess 启动
+        argv = (
+            ["cmd", "/c", self.command, *self.args]
+            if os.name == "nt"
+            else [self.command, *self.args]
+        )
+
         self._process = subprocess.Popen(
-            [self.command, *self.args],
+            argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -105,22 +112,19 @@ class MCPServerConnection:
         return await fut
 
     async def _read_loop(self) -> None:
-        """持续读取子进程 stdout，解析 JSON-RPC 响应。"""
+        """持续读取子进程 stdout，逐行解析 JSON-RPC 响应（MCP stdio 是行分隔 JSON）。"""
         assert self._process and self._process.stdout
         loop = asyncio.get_event_loop()
-        buffer = b""
         while True:
             try:
-                chunk = await loop.run_in_executor(
-                    None, self._process.stdout.read, 4096
+                line = await loop.run_in_executor(
+                    None, self._process.stdout.readline
                 )
-                if not chunk:
+                if not line:
                     break
-                buffer += chunk
-                while b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    if line.strip():
-                        self._handle_line(line.decode())
+                line = line.strip()
+                if line:
+                    self._handle_line(line.decode())
             except Exception:
                 break
 

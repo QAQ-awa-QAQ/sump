@@ -700,7 +700,7 @@ async function sendContinue() {
         assistantEl.querySelector(".msg-content")!.appendChild(contentEl);
       }
       rawContent += chunk.text;
-      contentEl.innerHTML = marked.parse(rawContent) as string;
+      contentEl.innerHTML = renderMarkdown(rawContent);
       scrollToBottom();
     } else if (chunk.type === "tool_call") {
       const toolMsg = document.createElement("div");
