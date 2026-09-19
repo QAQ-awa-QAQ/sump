@@ -38,6 +38,6 @@ class TestMultiEnvOverlay:
         monkeypatch.setenv("SUMP_SETTINGS_FILE", str(tmp_path / "settings.json"))
         (tmp_path / "default.yaml").write_text("deepseek:\n  model: m-default\n", encoding="utf-8")
         (tmp_path / "env1.yaml").write_text("deepseek:\n  model: m-env\n", encoding="utf-8")
-        save_settings({"deepseek": {"model": "m-settings"}})
+        save_settings({"deepseek.model": "m-settings"})
         cfg = Config(config_dir=tmp_path, env="env1")
         assert cfg.get("deepseek.model") == "m-settings"

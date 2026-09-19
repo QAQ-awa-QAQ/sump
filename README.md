@@ -113,6 +113,7 @@ SUMP 的最终形态是接入 QQ、微信的**全能个人助手**：
 - ✅ 定时等待器（wait 工具，agent 自主阻断等待耗时任务如 docker 构建、服务启动）
 - ✅ 工具索引（list_tools，返回可用工具列表；每 N 轮自动注入工具提示，默认 7 轮）
 - ✅ 设置中心全屏重构（左栏类别导航 + 上下移动/向右弹出动画 + 一键重启，70+ 配置项可调）
+- ✅ 测试覆盖 308 用例（settings 热更新 / NapCat 审批 / 记忆各层 / 工具 / 事件总线等）
 
 ### 规划中
 
@@ -160,6 +161,9 @@ uv run uvicorn api.server:app --host 0.0.0.0 --port 8765
 
 # 启动前端
 cd src/frontend && npm install && npm run dev  # → http://localhost:5173
+
+# 运行测试
+pytest -q
 ```
 
 ### Docker 部署（生产推荐）

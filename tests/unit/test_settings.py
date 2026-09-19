@@ -18,22 +18,23 @@ class TestMaskSecret:
 class TestSettingsStore:
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
         monkeypatch.setenv("SUMP_SETTINGS_FILE", str(tmp_path / "settings.json"))
-        save_settings({"deepseek": {"model": "deepseek-v4-pro"}})
+        save_settings({"deepseek.model": "deepseek-v4-pro"})
         assert load_settings()["deepseek"]["model"] == "deepseek-v4-pro"
 
     def test_whitelist_filters_unknown(self, tmp_path, monkeypatch):
         monkeypatch.setenv("SUMP_SETTINGS_FILE", str(tmp_path / "settings.json"))
         saved = save_settings(
-            {"deepseek": {"model": "x", "evil": "y"}, "napcat": {"owner_id": "1"}}
+            {"deepseek.model": "x", "deepseek.evil": "y", "agent.unknown_key": "1"}
         )
-        assert "napcat" not in saved
-        assert "evil" not in saved["deepseek"]
+        assert "agent.unknown_key" not in saved
+        assert "deepseek.evil" not in saved
+        assert saved.get("deepseek.model") == "x"
 
     def test_empty_api_key_keeps_existing(self, tmp_path, monkeypatch):
         """敏感字段空值视为不修改，避免前端未回填时清空。"""
         monkeypatch.setenv("SUMP_SETTINGS_FILE", str(tmp_path / "settings.json"))
-        save_settings({"deepseek": {"api_key": "sk-real"}})
-        save_settings({"deepseek": {"api_key": "", "model": "m2"}})
+        save_settings({"deepseek.api_key": "sk-real"})
+        save_settings({"deepseek.api_key": "", "deepseek.model": "m2"})
         saved = load_settings()["deepseek"]
         assert saved["api_key"] == "sk-real"
         assert saved["model"] == "m2"
@@ -49,7 +50,7 @@ class TestConfigOverlay:
     def test_settings_override_yaml(self, tmp_path, monkeypatch):
         """settings.json 优先级最高：覆盖 yaml 同名字段。"""
         monkeypatch.setenv("SUMP_SETTINGS_FILE", str(tmp_path / "settings.json"))
-        save_settings({"deepseek": {"model": "deepseek-v4-pro", "flash_model": "m-flash"}})
+        save_settings({"deepseek.model": "deepseek-v4-pro", "deepseek.flash_model": "m-flash"})
         cfg = Config()
         assert cfg.get("deepseek.model") == "deepseek-v4-pro"
         assert cfg.get("deepseek.flash_model") == "m-flash"
@@ -90,7 +91,7 @@ class TestStaleSnapshotFreshness:
         from sump.core.models.deepseek import DeepSeekClient
 
         # 此刻 config 快照已构造（模拟进程启动），settings.json 里还没有 api_key
-        save_settings({"deepseek": {"api_key": "sk-fresh-key", "model": "m-fresh"}})
+        save_settings({"deepseek.api_key": "sk-fresh-key", "deepseek.model": "m-fresh"})
         # 保存之后才创建的客户端（QQ 首条消息 / 新前端会话的构造路径）
         client = DeepSeekClient(config)
         assert client._api_key == "sk-fresh-key"

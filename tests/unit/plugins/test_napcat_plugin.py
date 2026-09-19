@@ -453,6 +453,7 @@ class TestImageExtraction:
 class TestNapCatApproval:
     @pytest.mark.asyncio
     async def test_approval_pending_pushes_to_owner(self, config, monkeypatch):
+        config._data.setdefault("napcat", {})["owner_id"] = "111"
         plugin = NapCatPlugin(config)
         sent: list[tuple] = []
 
@@ -469,15 +470,17 @@ class TestNapCatApproval:
             danger="high",
         )
 
-        assert plugin._pending_approval["private_111"] == "c1"
+        assert plugin._pending_approval["private_111"] == {"call_id": "c1", "source": "未知"}
         assert sent and "待审批" in sent[0][1]
         assert "rm -rf /" in sent[0][1]
+        # 审批发到主人私聊
+        assert sent[0][0] == {"message_type": "private", "user_id": "111"}
 
     @pytest.mark.asyncio
     async def test_approval_response_1_approves(self, config, monkeypatch):
         plugin = NapCatPlugin(config)
         monkeypatch.setattr(plugin, "_is_owner", lambda uid: True)
-        plugin._pending_approval["private_111"] = "c1"
+        plugin._pending_approval["private_111"] = {"call_id": "c1", "source": "x"}
 
         calls: list[tuple] = []
 
@@ -501,7 +504,7 @@ class TestNapCatApproval:
     async def test_approval_response_2_rejects(self, config, monkeypatch):
         plugin = NapCatPlugin(config)
         monkeypatch.setattr(plugin, "_is_owner", lambda uid: True)
-        plugin._pending_approval["group_222"] = "c2"
+        plugin._pending_approval["group_222"] = {"call_id": "c2", "source": "群聊 222 · 张三"}
 
         calls: list[tuple] = []
 
@@ -514,9 +517,8 @@ class TestNapCatApproval:
 
         await plugin._handle_message({
             "post_type": "message",
-            "message_type": "group",
-            "user_id": 999,
-            "group_id": 222,
+            "message_type": "private",
+            "user_id": 111,
             "message": "2",
         })
 

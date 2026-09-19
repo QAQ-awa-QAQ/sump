@@ -207,7 +207,7 @@ class TestSettingsDataFlow:
     async def test_settings_to_request_kwargs(self, tmp_path, monkeypatch):
         """设置轨迹：settings.json → Config → 客户端 → 请求参数；热更新同样生效。"""
         monkeypatch.setenv("SUMP_SETTINGS_FILE", str(tmp_path / "settings.json"))
-        save_settings({"deepseek": {"model": "deepseek-v4-pro"}})
+        save_settings({"deepseek.model": "deepseek-v4-pro"})
         cfg = Config()
         client = DeepSeekClient(cfg)
         assert client._model == "deepseek-v4-pro"
@@ -238,7 +238,7 @@ class TestSettingsDataFlow:
         from sump.plugins.builtin.napcat_plugin import NapCatPlugin
 
         plugin = NapCatPlugin(config)  # 启动快照：此时无 Key（占位）
-        save_settings({"deepseek": {"api_key": "sk-after-save"}})
+        save_settings({"deepseek.api_key": "sk-after-save"})
         agent = plugin._get_agent("private_1")  # 保存之后才创建（首条消息到达）
         assert agent.llm._backend._api_key == "sk-after-save"
 
