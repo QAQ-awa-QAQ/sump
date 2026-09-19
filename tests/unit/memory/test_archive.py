@@ -17,6 +17,19 @@ class TestArchiveMemory:
         assert loaded[0]["content"] == "你好"
         assert loaded[2]["tool_call_id"] == "t1"
 
+    def test_archive_multimodal_roundtrip(self, tmp_path):
+        """多模态消息：图片块可归档并读回；FTS 索引文本而非 base64。"""
+        archive = ArchiveMemory(str(tmp_path / "archive.db"))
+        blocks = [
+            {"type": "text", "text": "看这张图"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]
+        assert archive.archive_session("s1", "图", [{"role": "user", "content": blocks}]) == 1
+
+        loaded = archive.load_messages("s1")
+        assert loaded[0]["content"] == blocks
+        assert len(archive.search("看这张图")) >= 1
+
     def test_archive_empty(self, tmp_path):
         archive = ArchiveMemory(str(tmp_path / "archive.db"))
         assert archive.archive_session("s1", "空", []) == 0

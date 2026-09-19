@@ -17,6 +17,7 @@ import {
   type Session,
   type SessionSettings,
   type SessionDetail,
+  type ContentBlock,
   type StreamChunk,
   createSession,
   listSessions,
@@ -26,6 +27,10 @@ import {
   renameSession,
   streamChat,
   approveTool,
+  getGlobalSettings,
+  updateGlobalSettings,
+  restartServer,
+  type ConfigItem,
 } from "./api";
 
 // ---- State ----
@@ -37,19 +42,33 @@ let isStreaming = false;
 let abortController: AbortController | null = null;
 /* 注意：abortController 仅供 handleSend 使用；sendContinue 使用局部变量互不干扰 */
 
+interface PendingImage { id: string; dataUrl: string; }
+let pendingImages: PendingImage[] = [];
+let imageSeq = 0;
+
 // ---- DOM Elements ----
 
 const $sessionList = document.getElementById("session-list")!;
 const $chatMessages = document.getElementById("chat-messages")!;
 const $inputMessage = document.getElementById("input-message") as HTMLTextAreaElement;
 const $btnSend = document.getElementById("btn-send") as HTMLButtonElement;
+const $btnAttach = document.getElementById("btn-attach") as HTMLButtonElement;
+const $fileInput = document.getElementById("file-input") as HTMLInputElement;
+const $imagePreview = document.getElementById("image-preview")!;
 const $btnNewSession = document.getElementById("btn-new-session")!;
 const $toggleThinking = document.getElementById("toggle-thinking")!;
 const $toggleTrackThinking = document.getElementById("toggle-track-thinking")!;
 const $toggleAutoApprove = document.getElementById("toggle-auto-approve")!;
 const $currentSessionName = document.getElementById("current-session-name")!;
 const $btnSettings = document.getElementById("btn-settings")!;
-const $settingsDropdown = document.getElementById("settings-dropdown")!;
+const $settingsCenter = document.getElementById("settings-center")!;
+const $btnScClose = document.getElementById("btn-sc-close") as HTMLButtonElement;
+const $btnScSave = document.getElementById("btn-sc-save") as HTMLButtonElement;
+const $btnScRestart = document.getElementById("btn-sc-restart") as HTMLButtonElement;
+const $scStatus = document.getElementById("sc-status")!;
+const $scSidebar = document.getElementById("sc-sidebar")!;
+const $scPanel = document.getElementById("sc-panel")!;
+const $scPanelSession = document.getElementById("sc-panel-session")!;
 const $effortSection = document.getElementById("effort-section")!;
 const $csModel = document.getElementById("custom-select-model")!;
 const $csEffort = document.getElementById("custom-select-effort")!;
@@ -60,7 +79,7 @@ let autoTrackThinking = true;
 
 function getSettings(): SessionSettings {
   return {
-    model: $csModel.querySelector(".cs-trigger")!.getAttribute("data-value") || "deepseek-v4-flash",
+    model: $csModel.querySelector(".cs-trigger")!.getAttribute("data-value") || "deepseek-flash",
     reasoning_effort: $csEffort.querySelector(".cs-trigger")!.getAttribute("data-value") || "high",
     thinking_enabled: $toggleThinking.classList.contains("active"),
   };
@@ -204,6 +223,7 @@ async function handleNewSession() {
   currentSessionId = null;
   chatSessionId = null;
   localStorage.removeItem("sump_session_id");
+  clearPendingImages();
   clearChat();
   $currentSessionName.textContent = "SUMP Studio";
   $inputMessage.focus();
@@ -221,7 +241,9 @@ async function loadSession(id: string) {
     detail.messages.forEach((msg: any) => {
       if (msg.role === "user") {
         currentAssistantEl = null;
-        addMessage("user", msg.content);
+        const parsed = parseUserContent(msg.content);
+        const userEl = addMessage("user", parsed.text);
+        appendImages(userEl.querySelector(".msg-content")!, parsed.images);
       } else if (msg.role === "assistant") {
         const el = addMessage("assistant", "");
         const mc = el.querySelector(".msg-content")!;
@@ -309,6 +331,86 @@ function clearChat() {
   }
 }
 
+// ---- Image Attachments ----
+
+const MAX_IMAGE_BYTES = 32 * 1024 * 1024;  // DeepSeek 单图上限 32MiB
+
+function addImageFiles(files: File[]) {
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) continue;
+    if (file.size > MAX_IMAGE_BYTES) {
+      addMessage("error", `图片「${file.name}」超过 32MiB 上限，已忽略`);
+      continue;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+      pendingImages.push({ id: `img_${++imageSeq}`, dataUrl: reader.result });
+      renderImagePreview();
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+function renderImagePreview() {
+  $imagePreview.innerHTML = "";
+  if (!pendingImages.length) {
+    $imagePreview.classList.add("hidden");
+    return;
+  }
+  $imagePreview.classList.remove("hidden");
+  for (const p of pendingImages) {
+    const item = document.createElement("div");
+    item.className = "image-preview-item";
+    const img = document.createElement("img");
+    img.src = p.dataUrl;
+    img.alt = "待发送图片";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "image-preview-remove";
+    btn.textContent = "×";
+    btn.title = "移除";
+    btn.addEventListener("click", () => {
+      pendingImages = pendingImages.filter((x) => x.id !== p.id);
+      renderImagePreview();
+    });
+    item.appendChild(img);
+    item.appendChild(btn);
+    $imagePreview.appendChild(item);
+  }
+}
+
+function clearPendingImages() {
+  pendingImages = [];
+  renderImagePreview();
+}
+
+// 解析用户消息内容：纯文本或 [text, image_url] 块数组
+function parseUserContent(content: string | ContentBlock[]): { text: string; images: string[] } {
+  if (typeof content === "string") return { text: content, images: [] };
+  const texts: string[] = [];
+  const images: string[] = [];
+  for (const block of content) {
+    if (block.type === "text" && block.text) texts.push(block.text);
+    else if (block.type === "image_url" && block.image_url?.url) images.push(block.image_url.url);
+  }
+  return { text: texts.join("\n"), images };
+}
+
+function appendImages(msgContent: HTMLElement, images: string[]) {
+  if (!images.length) return;
+  const wrap = document.createElement("div");
+  wrap.className = "msg-images";
+  for (const url of images) {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "图片";
+    img.loading = "lazy";
+    wrap.appendChild(img);
+  }
+  msgContent.appendChild(wrap);
+}
+
 // ---- Chat ----
 
 async function handleSend() {
@@ -329,20 +431,23 @@ async function handleSend() {
   }
 
   const message = $inputMessage.value.trim();
-  if (!message) return;
+  const images = pendingImages.map((p) => p.dataUrl);
+  if (!message && !images.length) return;
 
   // UI state
   isStreaming = true;
   $btnSend.disabled = true;
   $inputMessage.value = "";
   $inputMessage.style.height = "auto";
+  clearPendingImages();
 
   // Remove welcome
   const welcomeEl = $chatMessages.querySelector(".welcome");
   if (welcomeEl) welcomeEl.remove();
 
-  // Add user message
-  addMessage("user", message);
+  // Add user message（文本 + 图片）
+  const userEl = addMessage("user", message);
+  appendImages(userEl.querySelector(".msg-content")!, images);
 
   // Add assistant placeholder
   const assistantEl = addMessage("assistant", "");
@@ -529,6 +634,7 @@ async function handleSend() {
           break;
       }
     },
+    images,
   );
 
   isStreaming = false;
@@ -765,6 +871,255 @@ function bindDialogActions(overlay: HTMLElement, callId: string) {
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(false); });
 }
 
+// ---- Settings Center（设置中心） ----
+
+const SECTION_LABELS: Record<string, string> = {
+  agent: "Agent",
+  deepseek: "模型",
+  memory: "记忆",
+  tools: "工具",
+  skills: "技能",
+  evaluation: "评估",
+  security: "安全",
+  debug: "调试",
+  sleep: "睡眠",
+  napcat: "NapCat QQ",
+  smart_home: "智能家居",
+};
+
+let configSchema: ConfigItem[] = [];
+let configValues: Record<string, unknown> = {};
+let sectionGroups = new Map<string, ConfigItem[]>();
+let activeSection = "";
+
+async function openSettingsCenter() {
+  $settingsCenter.classList.add("show");
+  setScStatus("");
+  try {
+    const s = await getGlobalSettings();
+    renderConfigSections(s.schema, s.values);
+  } catch {
+    setScStatus("加载设置失败，请检查服务是否可用", "err");
+  }
+}
+
+function closeSettingsCenter() {
+  $settingsCenter.classList.remove("show");
+}
+
+function setScStatus(text: string, kind: "" | "ok" | "err" = "") {
+  $scStatus.textContent = text;
+  $scStatus.className = kind ? `sc-status ${kind}` : "sc-status";
+}
+
+function renderConfigSections(schema: ConfigItem[], values: Record<string, unknown>) {
+  configSchema = schema;
+  configValues = { ...values };
+  sectionGroups = new Map();
+  for (const item of schema) {
+    if (!sectionGroups.has(item.section)) sectionGroups.set(item.section, []);
+    sectionGroups.get(item.section)!.push(item);
+  }
+  // 渲染左侧栏（会话偏好 + 各配置类别）
+  $scSidebar.innerHTML = "";
+  const sessionNav = document.createElement("button");
+  sessionNav.className = "sc-nav-item";
+  sessionNav.dataset.section = "__session__";
+  sessionNav.innerHTML = `<span>会话偏好</span><span class="sc-nav-count">即改即用</span>`;
+  sessionNav.addEventListener("click", () => switchSection("__session__"));
+  $scSidebar.appendChild(sessionNav);
+  for (const section of sectionGroups.keys()) {
+    const items = sectionGroups.get(section)!;
+    const btn = document.createElement("button");
+    btn.className = "sc-nav-item";
+    btn.dataset.section = section;
+    btn.innerHTML = `<span>${SECTION_LABELS[section] || section}</span><span class="sc-nav-count">${items.length}</span>`;
+    btn.addEventListener("click", () => switchSection(section));
+    $scSidebar.appendChild(btn);
+  }
+  // 默认显示第一个配置类别
+  const first = sectionGroups.keys().next().value;
+  if (first) switchSection(first);
+}
+
+function switchSection(section: string) {
+  flushPanelValues();
+  activeSection = section;
+  $scSidebar.querySelectorAll(".sc-nav-item").forEach((el) => {
+    el.classList.toggle("active", (el as HTMLElement).dataset.section === section);
+  });
+  if (section === "__session__") {
+    $scPanel.hidden = true;
+    $scPanelSession.hidden = false;
+    return;
+  }
+  $scPanelSession.hidden = true;
+  $scPanel.hidden = false;
+  renderPanel(section);
+}
+
+function renderPanel(section: string) {
+  const items = sectionGroups.get(section) || [];
+  $scPanel.innerHTML = "";
+  const title = document.createElement("h2");
+  title.className = "sc-panel-title";
+  title.textContent = SECTION_LABELS[section] || section;
+  const note = document.createElement("span");
+  note.className = "sc-section-note";
+  note.textContent = items.some((i) => i.restart)
+    ? "标“重启生效”项保存后需重启进程"
+    : "保存后立即生效";
+  title.appendChild(note);
+  $scPanel.appendChild(title);
+  for (const item of items) {
+    $scPanel.appendChild(renderConfigField(item, configValues[item.key]));
+  }
+  // 触发向右弹出动画
+  $scPanel.classList.remove("animating");
+  void $scPanel.offsetWidth;
+  $scPanel.classList.add("animating");
+}
+
+function flushPanelValues() {
+  if ($scPanel.hidden) return;
+  $scPanel.querySelectorAll("[data-key]").forEach((el) => {
+    const item = configSchema.find((i) => i.key === (el as HTMLElement).dataset.key);
+    if (!item) return;
+    if (item.type === "bool") {
+      configValues[item.key] = el.classList.contains("active");
+    } else if (item.type === "int" || item.type === "float") {
+      const raw = (el as HTMLInputElement).value.trim();
+      if (raw !== "") configValues[item.key] = raw;
+    } else {
+      const raw = (el as HTMLInputElement | HTMLSelectElement).value.trim();
+      if (!(item.type === "secret" && raw === "")) configValues[item.key] = raw;
+    }
+  });
+}
+
+function renderConfigField(item: ConfigItem, value: unknown): HTMLElement {
+  const field = document.createElement("div");
+  field.className = item.type === "bool" ? "sc-field sc-toggle-row" : "sc-field";
+  const label = document.createElement("label");
+  label.textContent = item.label;
+  if (item.restart) {
+    const tag = document.createElement("span");
+    tag.className = "sc-section-note";
+    tag.textContent = "重启生效";
+    label.appendChild(tag);
+  }
+  field.appendChild(label);
+
+  if (item.type === "bool") {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.dataset.key = item.key;
+    toggle.className = "toggle" + (value ? " active" : "");
+    toggle.setAttribute("role", "switch");
+    toggle.setAttribute("aria-checked", value ? "true" : "false");
+    toggle.addEventListener("click", () => {
+      const on = toggle.classList.toggle("active");
+      toggle.setAttribute("aria-checked", on ? "true" : "false");
+    });
+    field.appendChild(toggle);
+  } else if (item.type === "enum") {
+    const select = document.createElement("select");
+    select.className = "sc-select";
+    select.dataset.key = item.key;
+    for (const opt of item.options || []) {
+      const o = document.createElement("option");
+      o.value = opt;
+      o.textContent = opt;
+      if (String(value ?? "") === opt) o.selected = true;
+      select.appendChild(o);
+    }
+    field.appendChild(select);
+  } else {
+    const input = document.createElement("input");
+    input.dataset.key = item.key;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    if (item.type === "secret") {
+      input.type = "password";
+      input.value = "";
+      input.placeholder = value ? "留空表示不修改" : "";
+    } else if (item.type === "int" || item.type === "float") {
+      input.type = "number";
+      input.step = item.type === "int" ? "1" : "any";
+      input.value = String(value ?? "");
+    } else {
+      input.type = "text";
+      input.value = String(value ?? "");
+    }
+    field.appendChild(input);
+  }
+
+  if (item.hint) {
+    const hint = document.createElement("p");
+    hint.className = "sc-hint";
+    hint.textContent = item.hint;
+    field.appendChild(hint);
+  }
+  return field;
+}
+
+function collectConfigValues(): Record<string, unknown> {
+  flushPanelValues();
+  const patch: Record<string, unknown> = {};
+  for (const item of configSchema) {
+    const v = configValues[item.key];
+    if (item.type === "secret" && (v === undefined || v === "")) continue;  // 空 secret 不修改
+    if (v !== undefined && v !== "") patch[item.key] = v;
+  }
+  return patch;
+}
+
+async function saveSettingsCenter() {
+  const patch = collectConfigValues();
+  if (Object.keys(patch).length === 0) {
+    setScStatus("没有需要保存的修改", "err");
+    return;
+  }
+  $btnScSave.disabled = true;
+  $btnScSave.textContent = "保存中…";
+  setScStatus("");
+  try {
+    const s = await updateGlobalSettings(patch);
+    configValues = { ...s.values };
+    if (activeSection && activeSection !== "__session__") renderPanel(activeSection);
+    setScStatus("✓ 已保存", "ok");
+  } catch (err) {
+    setScStatus(`保存失败：${(err as Error).message}`, "err");
+  } finally {
+    $btnScSave.disabled = false;
+    $btnScSave.textContent = "保存";
+  }
+}
+
+async function handleRestartServer() {
+  if (!window.confirm("重启将中断当前服务与进行中的会话，确定重启？")) return;
+  $btnScRestart.disabled = true;
+  $btnScRestart.textContent = "重启中…";
+  setScStatus("重启中，请稍候…");
+  try {
+    await restartServer();
+  } catch {
+    /* 连接断开是预期的（服务正在重启） */
+  }
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    try {
+      await getGlobalSettings();
+      setScStatus("✓ 重启完成", "ok");
+      break;
+    } catch {
+      /* 尚未恢复 */
+    }
+  }
+  $btnScRestart.disabled = false;
+  $btnScRestart.textContent = "重启";
+}
+
 // ---- Events ----
 
 function bindEvents() {
@@ -806,17 +1161,21 @@ function bindEvents() {
 
   $btnSend.addEventListener("click", handleSend);
 
-  // Settings dropdown
-  $btnSettings.addEventListener("click", (e) => {
-    e.stopPropagation();
-    $settingsDropdown.classList.toggle("hidden");
+  // 图片附件
+  $btnAttach.addEventListener("click", () => $fileInput.click());
+  $fileInput.addEventListener("change", () => {
+    if ($fileInput.files?.length) addImageFiles(Array.from($fileInput.files));
+    $fileInput.value = "";  // 允许重复选择同一文件
   });
 
-  document.addEventListener("click", (e) => {
-    if (!$settingsDropdown.classList.contains("hidden") &&
-        !$settingsDropdown.contains(e.target as Node) &&
-        e.target !== $btnSettings) {
-      $settingsDropdown.classList.add("hidden");
+  // 设置中心
+  $btnSettings.addEventListener("click", () => openSettingsCenter());
+  $btnScClose.addEventListener("click", closeSettingsCenter);
+  $btnScSave.addEventListener("click", saveSettingsCenter);
+  $btnScRestart.addEventListener("click", handleRestartServer);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $settingsCenter.classList.contains("show")) {
+      closeSettingsCenter();
     }
   });
 

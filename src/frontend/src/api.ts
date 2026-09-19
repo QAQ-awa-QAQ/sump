@@ -11,9 +11,15 @@ export interface Session {
   created_at: string;
 }
 
+export interface ContentBlock {
+  type: string;
+  text?: string;
+  image_url?: { url: string };
+}
+
 export interface SessionDetail {
   id: string;
-  messages: { role: string; content: string; tool_calls?: any[]; tool_call_id?: string }[];
+  messages: { role: string; content: string | ContentBlock[]; tool_calls?: any[]; tool_call_id?: string }[];
 }
 
 export interface SessionSettings {
@@ -76,6 +82,49 @@ export async function listModels(): Promise<Model[]> {
   return res.json();
 }
 
+// ---- Global Settings（设置中心） ----
+
+export interface ConfigItem {
+  key: string;
+  label: string;
+  type: "string" | "secret" | "int" | "float" | "bool" | "enum" | "list";
+  section: string;
+  default: unknown;
+  hint?: string;
+  restart?: boolean;
+  options?: string[];
+}
+
+export interface GlobalSettings {
+  schema: ConfigItem[];
+  values: Record<string, unknown>;
+}
+
+export async function getGlobalSettings(): Promise<GlobalSettings> {
+  const res = await fetch(`${BASE}/settings`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function updateGlobalSettings(
+  patch: Record<string, unknown>,
+): Promise<GlobalSettings> {
+  const res = await fetch(`${BASE}/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ settings: patch }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(detail?.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function restartServer(): Promise<void> {
+  await fetch(`${BASE}/restart`, { method: "POST" });
+}
+
 // ---- Streaming Chat ----
 
 export type StreamChunk =
@@ -95,6 +144,7 @@ export function streamChat(
   message: string,
   settings: SessionSettings,
   onChunk: (chunk: StreamChunk) => void,
+  images: string[] = [],
 ): AbortController {
   const controller = new AbortController();
 
@@ -103,7 +153,7 @@ export function streamChat(
       const res = await fetch(`${BASE}/chat/${sessionId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, ...settings }),
+        body: JSON.stringify({ message, ...settings, images }),
         signal: controller.signal,
       });
 

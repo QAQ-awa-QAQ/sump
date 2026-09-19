@@ -1,5 +1,6 @@
 """NapCat 插件测试：OneBot 解析、会话路由、钩子闭环"""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +16,9 @@ class _FakeGroupAgentWithReply:
         self._bus = bus
         self._session_id = session_id
         self.recorded: list[str] = []
-        self.ctx = SimpleNamespace(add_user_message=self.recorded.append)
+        self.ctx = SimpleNamespace(
+            add_user_message=lambda text, images=None: self.recorded.append(text)
+        )
 
     async def run_core(self):
         await self._bus.emit(
@@ -54,8 +57,10 @@ class TestHandleMessage:
         monkeypatch.setattr(plugin, "_send", fake_send)
 
         calls: list[str] = []
+        streams: list[tuple[str, list[str]]] = []
 
-        async def fake_run_stream(text):
+        async def fake_run_stream(text, images=None):
+            streams.append((text, images))
             if False:
                 yield
 
@@ -80,6 +85,7 @@ class TestHandleMessage:
         })
 
         assert calls == ["private_111"]
+        assert streams == [("你好", [])]
         assert received[0]["content"] == "你好"
         assert received[0]["source"] == "napcat"
         assert sent == []  # 无回复钩子，不发回
@@ -88,9 +94,13 @@ class TestHandleMessage:
     async def test_group_records_message(self, config, monkeypatch):
         """群聊：记录消息；判断不插话则不回复。"""
         plugin = NapCatPlugin(config)
-        recorded: list[str] = []
+        recorded: list[tuple[str, list[str]]] = []
         run_core_calls: list[int] = []
-        agent = SimpleNamespace(ctx=SimpleNamespace(add_user_message=recorded.append))
+        agent = SimpleNamespace(
+            ctx=SimpleNamespace(
+                add_user_message=lambda text, images=None: recorded.append((text, images))
+            )
+        )
 
         async def fake_run_core():
             run_core_calls.append(1)
@@ -114,16 +124,20 @@ class TestHandleMessage:
             "message": "今天天气不错",
         })
 
-        assert recorded == ["[小明] 今天天气不错"]
+        assert recorded == [("[小明] 今天天气不错", [])]
         assert run_core_calls == []
 
     @pytest.mark.asyncio
     async def test_group_at_me_speaks(self, config, monkeypatch):
         """群聊：被 @ 必回。"""
         plugin = NapCatPlugin(config)
-        recorded: list[str] = []
+        recorded: list[tuple[str, list[str]]] = []
         run_core_calls: list[int] = []
-        agent = SimpleNamespace(ctx=SimpleNamespace(add_user_message=recorded.append))
+        agent = SimpleNamespace(
+            ctx=SimpleNamespace(
+                add_user_message=lambda text, images=None: recorded.append((text, images))
+            )
+        )
 
         async def fake_run_core():
             run_core_calls.append(1)
@@ -143,7 +157,7 @@ class TestHandleMessage:
             "message": [{"type": "at", "data": {"qq": "10001"}}, {"type": "text", "data": {"text": "星宝在吗"}}],
         })
 
-        assert recorded == ["[小明] 星宝在吗"]
+        assert recorded == [("[小明] 星宝在吗", [])]
         assert run_core_calls == [1]
 
 
@@ -234,7 +248,7 @@ class TestOwnerRestriction:
         monkeypatch.setattr(plugin, "_send", fake_send)
         called: list[str] = []
 
-        async def fake_run_stream(text):
+        async def fake_run_stream(text, images=None):
             if False:
                 yield
 
@@ -332,16 +346,20 @@ class TestImageExtraction:
 
     @pytest.mark.asyncio
     async def test_image_message_recorded(self, config, monkeypatch):
-        """纯图片消息：下载到本地后记录为 [图片] 本地路径，不因无文本被忽略。"""
+        """纯图片消息：下载转 base64 后随消息传给 Agent，不因无文本被忽略。"""
         plugin = NapCatPlugin(config)
-        recorded: list[str] = []
-        agent = SimpleNamespace(ctx=SimpleNamespace(add_user_message=recorded.append))
+        recorded: list[tuple[str, list[str]]] = []
+        agent = SimpleNamespace(
+            ctx=SimpleNamespace(
+                add_user_message=lambda text, images=None: recorded.append((text, images))
+            )
+        )
         monkeypatch.setattr(plugin, "_get_agent", lambda sid: agent)
 
         async def fake_download(url):
-            return "/tmp/pic.jpg"
+            return "data:image/jpeg;base64,AAAA"
 
-        monkeypatch.setattr(plugin, "_download_image", fake_download)
+        monkeypatch.setattr(plugin, "_download_image_data_url", fake_download)
 
         async def fake_should_speak(agent, text, mentioned, at_me):
             return False
@@ -357,16 +375,79 @@ class TestImageExtraction:
             "message": [{"type": "image", "data": {"url": "http://x/pic.jpg"}}],
         })
 
-        assert recorded == ["[小明] [图片] /tmp/pic.jpg"]
+        assert recorded == [("[小明] ", ["data:image/jpeg;base64,AAAA"])]
 
-    def test_guess_image_ext(self):
-        from sump.plugins.builtin.napcat_plugin import _guess_image_ext
+    def test_guess_image_mime(self):
+        from sump.plugins.builtin.napcat_plugin import _guess_image_mime
 
-        assert _guess_image_ext(b"\xff\xd8\xffxx") == ".jpg"
-        assert _guess_image_ext(b"\x89PNG\r\n\x1a\nxx") == ".png"
-        assert _guess_image_ext(b"GIF8xx") == ".gif"
-        assert _guess_image_ext(b"RIFF....WEBPxx") == ".webp"
-        assert _guess_image_ext(b"unknown") == ".jpg"
+        assert _guess_image_mime(b"\xff\xd8\xffxx") == "image/jpeg"
+        assert _guess_image_mime(b"\x89PNG\r\n\x1a\nxx") == "image/png"
+        assert _guess_image_mime(b"GIF8xx") == "image/gif"
+        assert _guess_image_mime(b"RIFF....WEBPxx") == "image/webp"
+        assert _guess_image_mime(b"unknown") == "image/jpeg"
+
+    @pytest.mark.asyncio
+    async def test_private_image_passthrough(self, config, monkeypatch):
+        """私聊图片：下载转 data URL 后随消息传给 Agent。"""
+        plugin = NapCatPlugin(config)
+        monkeypatch.setattr(plugin, "_is_owner", lambda uid: True)
+
+        async def fake_download(url):
+            return "data:image/png;base64,AAAA"
+
+        monkeypatch.setattr(plugin, "_download_image_data_url", fake_download)
+
+        streams: list[tuple[str, list[str]]] = []
+
+        async def fake_run_stream(text, images=None):
+            streams.append((text, images))
+            if False:
+                yield
+
+        fake_agent = SimpleNamespace(run_stream=fake_run_stream)
+        monkeypatch.setattr(plugin, "_get_agent", lambda sid: fake_agent)
+
+        await plugin._handle_message({
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": 111,
+            "message": [
+                {"type": "image", "data": {"url": "http://x/pic.png"}},
+                {"type": "text", "data": {"text": "看看这图"}},
+            ],
+        })
+
+        assert streams == [("看看这图", ["data:image/png;base64,AAAA"])]
+
+    @pytest.mark.asyncio
+    async def test_image_download_failure_placeholder(self, config, monkeypatch):
+        """图片下载失败：文本降级为 [图片] 占位，不携带图片。"""
+        plugin = NapCatPlugin(config)
+        monkeypatch.setattr(plugin, "_is_owner", lambda uid: True)
+
+        async def fake_download(url):
+            return None
+
+        monkeypatch.setattr(plugin, "_download_image_data_url", fake_download)
+
+        streams: list[tuple[str, list[str]]] = []
+
+        async def fake_run_stream(text, images=None):
+            streams.append((text, images))
+            if False:
+                yield
+
+        fake_agent = SimpleNamespace(run_stream=fake_run_stream)
+        monkeypatch.setattr(plugin, "_get_agent", lambda sid: fake_agent)
+
+        await plugin._handle_message({
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": 111,
+            "message": [{"type": "image", "data": {"url": "http://x/pic.png"}}],
+        })
+
+        assert streams == [("[图片]", [])]
 
 
 class TestNapCatApproval:
@@ -450,7 +531,11 @@ class TestOwnerMarker:
         plugin = NapCatPlugin(config)
         monkeypatch.setattr(plugin, "_is_owner", lambda uid: uid == "999")
         recorded: list[str] = []
-        agent = SimpleNamespace(ctx=SimpleNamespace(add_user_message=recorded.append))
+        agent = SimpleNamespace(
+            ctx=SimpleNamespace(
+                add_user_message=lambda text, images=None: recorded.append(text)
+            )
+        )
         monkeypatch.setattr(plugin, "_get_agent", lambda sid: agent)
 
         async def fake_should_speak(agent, text, mentioned, at_me):
@@ -468,3 +553,49 @@ class TestOwnerMarker:
         })
 
         assert recorded == ["[小明·主人] 我喜欢 Python"]
+
+
+class TestSendImageTo:
+    @pytest.mark.asyncio
+    async def test_send_image_segments(self, config, tmp_path):
+        """send_image_to：OneBot 消息段数组，file 为 file:// URI，附言为 text 段。"""
+        plugin = NapCatPlugin(config)
+        sent_raw: list[str] = []
+
+        class _FakeWS:
+            async def send(self, raw: str) -> None:
+                sent_raw.append(raw)
+
+        plugin._ws = _FakeWS()
+        pic = tmp_path / "cat.png"
+        pic.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x")
+
+        error = await plugin.send_image_to("group_123", str(pic), "看这个")
+        assert error is None
+        msg = json.loads(sent_raw[0])
+        assert msg["action"] == "send_msg"
+        assert msg["params"]["group_id"] == "123"
+        segments = msg["params"]["message"]
+        assert segments[0]["type"] == "image"
+        assert segments[0]["data"]["file"].startswith("file:///")
+        assert segments[1] == {"type": "text", "data": {"text": "看这个"}}
+
+    @pytest.mark.asyncio
+    async def test_not_connected(self, config, tmp_path):
+        plugin = NapCatPlugin(config)
+        pic = tmp_path / "cat.png"
+        pic.write_bytes(b"x")
+        assert await plugin.send_image_to("group_123", str(pic)) == "QQ 未连接"
+
+    @pytest.mark.asyncio
+    async def test_unknown_session(self, config):
+        plugin = NapCatPlugin(config)
+        assert await plugin.send_image_to("weird_1", "x.png") == "未知会话：weird_1"
+
+    def test_qq_agent_has_image_tool(self, config):
+        """QQ 场景的 Agent 注册了 send_qq_image 与资产工具。"""
+        plugin = NapCatPlugin(config)
+        agent = plugin._get_agent("group_tool_test")
+        assert agent.tools.get("send_qq_image") is not None
+        assert agent.tools.get("asset_save") is not None
+        assert agent.tools.get("asset_search") is not None

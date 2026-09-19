@@ -1,4 +1,4 @@
-"""图像理解工具（deepseek-v4-flash-vision-exp）
+"""图像理解工具（deepseek-flash）
 
 作为工具存在，不替换主模型：Agent 在需要识别图片时调用本工具，
 工具内部走视觉模型，返回文字描述。

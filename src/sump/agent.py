@@ -5,10 +5,12 @@ import uuid as _uuid
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
+from sump.assets import AssetStore
 from sump.config import Config
 from sump.core.context import Context
 from sump.core.executor import Executor
-from sump.core.models import LLMClient
+from sump.core.models import LLMClient, sanitize_marked_output
+from sump.core.models.deepseek import supports_vision
 from sump.core.planner import Planner
 from sump.evaluation.arbiter import Arbiter
 from sump.evaluation.internal import InternalEvaluator
@@ -23,11 +25,30 @@ from sump.memory.working import WorkingMemory
 from sump.skills.creator import SkillCreator
 from sump.skills.manager import SkillManager
 from sump.smart_home import from_config
+from sump.tools.builtin.asset_tools import (
+    AssetDeleteTool,
+    AssetSaveTool,
+    AssetSearchTool,
+    AssetUpdateTool,
+)
 from sump.tools.builtin.image_vision import ImageVisionTool
 from sump.tools.builtin.shell import ShellTool
+from sump.tools.builtin.tool_index import ToolIndexTool
+from sump.tools.builtin.wait import WaitTool
 from sump.tools.mcp.client import MCPClient
 from sump.tools.registry import ToolRegistry
-from sump.types import Message
+from sump.types import Message, content_to_text
+
+# 运行时硬性规范：每次拼入系统提示末尾，任何人格配置下都生效。
+# 背景：模型偶尔以特殊标记文本形态泄漏工具调用意图，这类文本不进入标准
+# 工具调用流水线（解析器明确不识别），只会被清洗剥离；此处从源头约束输出。
+_RUNTIME_RULES = (
+    "\n\n【工具调用硬性规范】\n"
+    "- 调用工具必须使用标准工具调用协议（结构化 tool_calls）；\n"
+    "- 严禁在正文文本中输出任何伪工具调用内容：特殊分隔符包裹的标记（如 DSML 标记）、"
+    "伪 XML 标签、伪 JSON 调用文本等一律禁止；\n"
+    "- 若当前无法使用标准协议，就直接用文字回复，不得伪造调用格式。"
+)
 
 
 class Agent:
@@ -50,7 +71,22 @@ class Agent:
         self.tools.register(ShellTool(
             platform=str(self.config.get("tools.builtin.shell.platform", "auto"))
         ))
-        self.tools.register(ImageVisionTool(self.llm))
+        # 多模态主模型直读图片（图片块直发）→ 不挂额外识图工具；
+        # 纯文本主模型（如 deepseek-v4-pro）挂 image_vision 兜底
+        self._sync_image_tool()
+        # 资产库（表情包等收藏；启动自动索引 assets/ 目录）
+        self.assets = AssetStore(
+            asset_dir=str(self.config.get("assets.dir", "assets")),
+            db_path=str(self.config.get("assets.db_path", "data/assets.db")),
+        )
+        self.tools.register(AssetSaveTool(self.assets, self.ctx))
+        self.tools.register(AssetSearchTool(self.assets))
+        self.tools.register(AssetDeleteTool(self.assets))
+        self.tools.register(AssetUpdateTool(self.assets))
+        self.tools.register(WaitTool(
+            max_seconds=int(self.config.get("tools.builtin.wait.max_seconds", 600))
+        ))
+        self.tools.register(ToolIndexTool(self.tools))
         self._session_id = "default"
         self._bus = get_event_bus()
 
@@ -109,6 +145,8 @@ class Agent:
         self._pending_approvals: dict[str, dict[str, Any]] = {}
         self._is_continue = False
         self.on_security_check: Callable[[str, str, str], bool] | None = None
+        # 对话流串行锁：同一 Agent 的 run_stream / run_core 串行执行，防止并发交错写坏上下文
+        self._run_lock = asyncio.Lock()
 
         # 子组件：Planner + Executor（含内部评估 + 裁决）
         self._planner = Planner(self.ctx)
@@ -127,7 +165,29 @@ class Agent:
             on_approval_pending=self._api_approval_pending,
             evaluator=evaluator,
             arbiter=arbiter,
+            tools_first_round_only=bool(
+                self.config.get("agent.tools_first_round_only", True)
+            ),
+            tool_hint_every=int(self.config.get("agent.tool_hint_every", 7)),
         )
+
+    # ------------------------------------------------------------------
+    # 设置热更新
+    # ------------------------------------------------------------------
+
+    def apply_settings(self, settings: dict[str, Any]) -> None:
+        """设置中心变更：热更新 LLM 后端 + 同步识图工具可用性。"""
+        self.llm._backend.apply_settings(settings)
+        self._sync_image_tool()
+
+    def _sync_image_tool(self) -> None:
+        """按当前主模型的多模态能力增删 image_vision 工具。"""
+        vision = supports_vision(str(self.llm._backend._model))
+        exists = self.tools.get("image_vision") is not None
+        if vision and exists:
+            self.tools.remove("image_vision")
+        elif not vision and not exists:
+            self.tools.register(ImageVisionTool(self.llm))
 
     # ------------------------------------------------------------------
     # 会话管理
@@ -295,13 +355,24 @@ class Agent:
     # ------------------------------------------------------------------
 
     async def run_stream(
-        self, user_input: str
+        self, user_input: str, images: list[str] | None = None
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """执行一轮对话。流程: 更新工作记忆 -> 注入人格/记忆 -> 用户消息 -> Planner -> Executor。"""
+        """执行一轮对话（同一 Agent 的对话流串行化，防并发交错）。
+
+        images 为 data URL 或 http(s) 链接，随用户消息直发主模型（V4.1 原生视觉）。
+        """
+        async with self._run_lock:
+            async for event in self._run_stream_inner(user_input, images):
+                yield event
+
+    async def _run_stream_inner(
+        self, user_input: str, images: list[str] | None = None
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """对话主体。流程: 更新工作记忆 -> 注入人格/记忆 -> 用户消息 -> Planner -> Executor。"""
         await self._ensure_mcp_connected()
         await self._update_working_memory(user_input)
         await self._inject_context(user_input)
-        self.ctx.add_user_message(user_input)
+        self.ctx.add_user_message(user_input, images)
 
         await self._bus.emit(
             AgentEvents.MESSAGE_RECEIVED, session_id=self._session_id, content=user_input
@@ -334,15 +405,23 @@ class Agent:
                 reply_parts.append(str(event.get("text", "")))
             yield event
 
-        if reply_parts:
+        # 出口清洗：伪调用标记文本绝不外发（QQ/CLI）
+        cleaned = sanitize_marked_output("".join(reply_parts))
+        if cleaned:
             await self._bus.emit(
                 AgentEvents.REPLY,
                 session_id=self._session_id,
-                content="".join(reply_parts),
+                content=cleaned,
             )
 
     async def run_core(self) -> AsyncGenerator[dict[str, Any], None]:
-        """延续执行（审批后 __continue__），不添加用户消息。"""
+        """延续执行（审批后 __continue__），不添加用户消息；与 run_stream 共用串行锁。"""
+        async with self._run_lock:
+            async for event in self._run_core_inner():
+                yield event
+
+    async def _run_core_inner(self) -> AsyncGenerator[dict[str, Any], None]:
+        """延续执行主体。"""
         await self._inject_context(self._last_user_message())
         plan = await self._planner.plan(
             tools_available=len(self.tools.list_all()),
@@ -353,11 +432,13 @@ class Agent:
             if event.get("type") == "content":
                 reply_parts.append(str(event.get("text", "")))
             yield event
-        if reply_parts:
+        # 出口清洗：伪调用标记文本绝不外发（QQ/CLI）
+        cleaned = sanitize_marked_output("".join(reply_parts))
+        if cleaned:
             await self._bus.emit(
                 AgentEvents.REPLY,
                 session_id=self._session_id,
-                content="".join(reply_parts),
+                content=cleaned,
             )
 
     async def _ensure_mcp_connected(self) -> None:
@@ -404,6 +485,7 @@ class Agent:
         skills = self._skills_prompt()
         if skills:
             prompt = f"{prompt}\n\n{skills}" if prompt else skills
+        prompt = f"{prompt}{_RUNTIME_RULES}".strip()
         self.ctx.set_system_prompt(prompt)
 
     async def _update_working_memory(self, user_input: str) -> None:
@@ -455,7 +537,7 @@ class Agent:
     def _last_user_message(self) -> str:
         for m in reversed(self.ctx.messages):
             if m.role == "user":
-                return m.content
+                return content_to_text(m.content)
         return ""
 
     # ------------------------------------------------------------------

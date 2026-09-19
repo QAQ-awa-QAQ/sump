@@ -1,5 +1,7 @@
 """Agent 集成测试 —— run_stream 端到端流程"""
 
+from typing import Any
+
 import pytest
 
 from sump.agent import Agent
@@ -114,6 +116,41 @@ class TestAgentSecurity:
         assert agent.lookup_pending_call("xyz") is False
 
 
+class TestVisionToolRouting:
+    """识图工具挂载策略：多模态主模型直读图片（图片块直发），
+    不挂额外 image_vision 工具；纯文本模型挂兜底。"""
+
+    def test_supports_vision_mapping(self):
+        from sump.core.models.deepseek import supports_vision
+
+        assert supports_vision("deepseek-flash")
+        assert supports_vision("DeepSeek-Flash-2026xx")  # 大小写 / 版本化 id
+        assert not supports_vision("deepseek-v4-pro")
+        assert not supports_vision("")
+
+    def test_multimodal_model_has_no_vision_tool(self, config):
+        """默认模型 deepseek-flash 支持图片直通 → 不注册 image_vision。"""
+        agent = Agent(config, deep_embedder=_FakeEmbedder())
+        assert agent.tools.get("image_vision") is None
+
+    def test_text_model_gets_vision_tool(self, config):
+        """文本模型（deepseek-v4-pro）无法直读图片 → 挂 image_vision 兜底。"""
+        config._data.setdefault("deepseek", {})["model"] = "deepseek-v4-pro"
+        agent = Agent(config, deep_embedder=_FakeEmbedder())
+        assert agent.tools.get("image_vision") is not None
+
+    def test_settings_switch_syncs_vision_tool(self, config):
+        """设置中心切换模型：已创建 Agent 的识图工具随之增删。"""
+        agent = Agent(config, deep_embedder=_FakeEmbedder())
+        assert agent.tools.get("image_vision") is None
+
+        agent.apply_settings({"model": "deepseek-v4-pro"})
+        assert agent.tools.get("image_vision") is not None
+
+        agent.apply_settings({"model": "deepseek-flash"})
+        assert agent.tools.get("image_vision") is None
+
+
 # ------------------------------------------------------------------
 # Fake DeepSeek for integration tests
 # ------------------------------------------------------------------
@@ -142,3 +179,51 @@ class _FakeDeepSeek:
     async def chat_stream(self, messages):
         for text in self._stream_texts:
             yield {"type": "content", "text": text}
+
+
+# ------------------------------------------------------------------
+# REPLY 出口清洗（伪调用标记文本绝不外发）
+# ------------------------------------------------------------------
+
+class TestReplySanitization:
+    """REPLY 事件文本经过清洗：标记文本不会发到 QQ/CLI。"""
+
+    @pytest.mark.asyncio
+    async def test_marked_stream_reply_stripped(self, config):
+        from sump.event import AgentEvents, get_event_bus
+
+        # 运行时拼接构造标记形态（避免源码出现完整标记字面量）
+        w = "\uff5c"
+        token = f"{w}{w}DSML{w}{w}"
+
+        agent = Agent(config, deep_embedder=_FakeEmbedder())
+        agent.llm._backend = _FakeDeepSeek(stream_texts=[
+            "正常开头\n",
+            f"{token} calls>\n",
+            "正常结尾",
+        ])
+
+        replies: list[str] = []
+
+        async def _capture(session_id: str, content: str, **kwargs: Any) -> None:
+            replies.append(content)
+
+        get_event_bus().on(AgentEvents.REPLY, _capture, consumer="test")
+
+        async for _ in agent.run_stream("hi"):
+            pass
+
+        assert replies == ["正常开头\n正常结尾"]
+
+
+class TestToolsFirstRoundOnlyWiring:
+    """agent.tools_first_round_only 配置接线到 Executor（默认开启）。"""
+
+    def test_default_true(self, config):
+        agent = Agent(config, deep_embedder=_FakeEmbedder())
+        assert agent._executor._tools_first_round_only is True
+
+    def test_config_disables(self, config):
+        config._data.setdefault("agent", {})["tools_first_round_only"] = False
+        agent = Agent(config, deep_embedder=_FakeEmbedder())
+        assert agent._executor._tools_first_round_only is False

@@ -25,7 +25,7 @@ class TestDeepSeekClientFlash:
 
         assert result == "标题"
         kwargs = mock_create.call_args.kwargs
-        assert kwargs["model"] == "deepseek-v4-flash"
+        assert kwargs["model"] == "deepseek-flash"
         assert kwargs["messages"] == [{"role": "user", "content": "总结这个对话"}]
         assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
         assert kwargs["max_tokens"] == 32

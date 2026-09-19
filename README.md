@@ -91,8 +91,11 @@ SUMP 的最终形态是接入 QQ、微信的**全能个人助手**：
 - ✅ 灵魂注入（SOUL.md / AGENTS.md → system prompt + 睡眠精简备份）
 - ✅ MCP 客户端（Model Context Protocol 工具接入 + 工具自动注册进 ToolRegistry）
 - ✅ MCP 工具沙箱（Sandbox 超时 + 异常隔离执行）
-- ✅ NapCat QQ 适配（正向 WebSocket / 零信任主人 / 数字审批 1同意2拒绝 / 群聊记录+自主插话 @必回·星宝加权 / QQ 图片下载识别）
-- ✅ 多模态图像理解工具（deepseek-v4-flash-vision-exp，支持本地文件与 URL）
+- ✅ NapCat QQ 适配（正向 WebSocket / 零信任主人 / 审批推主人私聊·标注来源群聊+发起人 / 数字审批 1同意2拒绝 / 群聊记录+自主插话 @必回·星宝加权 / QQ 图片 base64 直通识别 / 发送表情包图片）
+- ✅ 图片多模态直通（QQ / Web 上传 / API → base64 → V4.1-Flash 原生视觉，仅最近一条带图消息内联，更早转占位）
+- ✅ 设置中心（前端可视化配置 API Key / Base URL / 主对话·视觉·轻量任务模型，保存即热更新生效）
+- ✅ Agent 资产库（assets/ 文件夹 + SQLite 索引 + FTS5 检索；asset_save / asset_search / asset_delete / asset_update 工具，保存必写描述、软删除入 .trash、描述标签可改，启动自动对账扫描）
+- ✅ 多模态图像理解工具（deepseek-flash 原生视觉，支持本地文件与 URL）
 - ✅ 评价器接入执行循环（InternalEvaluator flash 评估 + Arbiter 裁决 finish/continue/retry，8s 超时降级）
 - ✅ 技能自动创建（SkillCreator LLM 提炼 → 持久化 skills/permanent/ → 启动加载）
 - ✅ Agent 生命周期事件总线（消息/回复/工具/审批事件，供插件订阅）
@@ -107,6 +110,9 @@ SUMP 的最终形态是接入 QQ、微信的**全能个人助手**：
 - ✅ SearXNG 搜索接入（MCP 元搜索引擎，自托管免费，聚合 Google/Bing/百度等）
 - ✅ 智能家居控制抽象层（SmartHomeBackend 可插拔后端，预留 HA / MQTT / 米家 / 涂鸦）
 - ✅ Docker 部署支持（多阶段构建单容器，前后端一体 + docker-compose + 数据卷持久化）
+- ✅ 定时等待器（wait 工具，agent 自主阻断等待耗时任务如 docker 构建、服务启动）
+- ✅ 工具索引（list_tools，返回可用工具列表；每 N 轮自动注入工具提示，默认 7 轮）
+- ✅ 设置中心全屏重构（左栏类别导航 + 上下移动/向右弹出动画 + 一键重启，70+ 配置项可调）
 
 ### 规划中
 

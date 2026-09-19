@@ -5,6 +5,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from sump.types import MessageContent, parse_content, serialize_content
+
 
 class SessionMemory:
     """会话消息持久化，基于 SQLite。
@@ -29,19 +31,19 @@ class SessionMemory:
         self,
         session_id: str,
         role: str,
-        content: str,
+        content: MessageContent,
         *,
         tool_call_id: str = "",
         tool_calls: list[dict[str, Any]] | None = None,
         reasoning_content: str = "",
     ) -> None:
-        """保存一条消息。"""
+        """保存一条消息（多模态内容序列化为 JSON 字符串）。"""
         db = self._conn()
         try:
             db.execute(
                 "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, reasoning_content) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (session_id, role, content, tool_call_id,
+                (session_id, role, serialize_content(content), tool_call_id,
                  json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None,
                  reasoning_content),
             )
@@ -97,7 +99,7 @@ class SessionMemory:
             entry: dict[str, Any] = {
                 "session_id": session_id,
                 "role": role,
-                "content": content,
+                "content": parse_content(content),
                 "id": mid,
             }
             if tci:
@@ -109,12 +111,11 @@ class SessionMemory:
             result.append(entry)
         return result
 
-    @staticmethod
-    def _parse_rows(rows: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
+    def _parse_rows(self, rows: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
         """把查询行（按 id 倒序）转为消息字典列表（按时间正序）。"""
         result: list[dict[str, Any]] = []
         for role, content, tci, tcs, reasoning in reversed(rows):
-            entry: dict[str, Any] = {"role": role, "content": content}
+            entry: dict[str, Any] = {"role": role, "content": parse_content(content)}
             if tci:
                 entry["tool_call_id"] = tci
             if tcs:

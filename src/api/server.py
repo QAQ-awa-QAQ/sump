@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import router
+from api.routes import register_settings_refresher, router
 from sump.core.sleep import SleepManager, get_sleep_manager
 from sump.debug.logger import setup_logger
 from sump.memory.embedder import Embedder
@@ -55,6 +55,8 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_startup_consolidate(sm))
     # NapCat QQ 适配（按配置启用）
     napcat = NapCatPlugin(sm.config)
+    register_settings_refresher(napcat.apply_settings)
+    register_settings_refresher(sm.apply_settings)  # 巩固工具的长生命周期客户端同样需要热更新
     await napcat.start()
     yield
     await sm.stop()

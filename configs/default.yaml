@@ -2,6 +2,8 @@
 agent:
   name: "SUMP"
   max_rounds: 10                       # 工具调用最大轮次
+  tools_first_round_only: true         # 仅首轮向模型传递工具定义（默认开启省 token；关闭=每轮传递，模型可继续发起原生工具调用）
+  tool_hint_every: 7                   # 每几轮重新注入工具提示（0=禁用），对抗 agent 忘记工具
   context_window: 50                    # 上下文窗口消息数
   inject_reasoning: false               # 恢复历史会话时是否注入推理内容（默认不注入，节省 token）
 
@@ -45,8 +47,9 @@ memory:
 deepseek:
   api_key: ""                           # 或通过环境变量 DEEPSEEK_API_KEY 设置
   base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-flash"            # deepseek-v4-flash / deepseek-v4-pro
-  vision_model: "deepseek-v4-flash-vision-exp"   # 视觉模型（仅图像工具用）
+  model: "deepseek-flash"               # deepseek-flash（V4.1，默认）/ deepseek-v4-pro（不支持图片）
+  flash_model: "deepseek-flash"         # 轻量任务模型（标题总结/记忆提炼/安全分析等高频调用）
+  vision_model: "deepseek-flash"        # 视觉模型（仅 image_vision 工具用；已并入 Flash 主模型，可独立配置）
   reasoning_effort: "high"              # low / high / max（仅 thinking_enabled=true 时生效）
   thinking_enabled: false               # 是否启用思维链推理（默认关闭，按需开启）
   max_tokens: 4096
@@ -61,6 +64,7 @@ tools:
     search: {enabled: true}
     web: {enabled: true, timeout: 10}
     datetime: {enabled: true}
+    wait: {enabled: true, max_seconds: 600}   # 定时等待器（等待耗时任务）
   mcp:
     enabled: true                       # 接入 MCP 服务器工具（SearXNG 搜索）
     servers:
@@ -83,6 +87,10 @@ skills:
   auto_create: true
   proficiency_threshold: 0.7
   permanent_dir: "skills/permanent"     # 永久技能持久化目录（按 proficiency 分子目录）
+
+assets:
+  dir: "assets"                         # Agent 资产库目录（表情包等，可手工维护，启动自动索引）
+  db_path: "data/assets.db"             # 资产索引数据库（SQLite + FTS5 全文检索）
 
 evaluation:
   enabled: true                         # 工具循环中的内部评估（v4-flash 不思考）

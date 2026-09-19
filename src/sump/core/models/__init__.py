@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from sump.config import Config
-from sump.core.models.deepseek import DeepSeekClient
+from sump.core.models.deepseek import DeepSeekClient, sanitize_marked_output
 
 
 class LLMClient:

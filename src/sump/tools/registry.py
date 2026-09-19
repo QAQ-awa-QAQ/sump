@@ -19,6 +19,10 @@ class ToolRegistry:
         """获取工具"""
         return self._tools.get(name)
 
+    def remove(self, name: str) -> None:
+        """移除工具（不存在时忽略）"""
+        self._tools.pop(name, None)
+
     def list_all(self) -> list[Tool]:
         """列出所有工具"""
         return list(self._tools.values())

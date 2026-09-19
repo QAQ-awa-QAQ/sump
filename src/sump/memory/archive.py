@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from sump.types import content_to_text, parse_content, serialize_content
+
 
 class ArchiveMemory:
     """历史会话归档存储（独立 SQLite 库）。"""
@@ -74,7 +76,7 @@ class ArchiveMemory:
                         session_id,
                         name,
                         m.get("role", ""),
-                        m.get("content", ""),
+                        serialize_content(m.get("content", "")),
                         m.get("tool_call_id", ""),
                         json.dumps(m["tool_calls"], ensure_ascii=False)
                         if m.get("tool_calls")
@@ -88,7 +90,7 @@ class ArchiveMemory:
             try:
                 db.executemany(
                     "INSERT INTO archived_messages_fts (session_id, content) VALUES (?, ?)",
-                    [(session_id, m.get("content", "")) for m in messages],
+                    [(session_id, content_to_text(m.get("content", ""))) for m in messages],
                 )
             except Exception:
                 pass
@@ -111,7 +113,7 @@ class ArchiveMemory:
 
         result: list[dict[str, Any]] = []
         for role, content, tci, tcs, reasoning in rows:
-            entry: dict[str, Any] = {"role": role, "content": content}
+            entry: dict[str, Any] = {"role": role, "content": parse_content(content)}
             if tci:
                 entry["tool_call_id"] = tci
             if tcs:

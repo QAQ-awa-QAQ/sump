@@ -1,6 +1,7 @@
 """pytest 配置与 fixture"""
 
 import os
+import tempfile
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -8,6 +9,12 @@ import pytest
 
 # 测试环境：不需要真实 API key
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-dummy-key")
+# 测试环境：隔离全局运行时设置（避免本地 data/settings.json 影响用例）
+os.environ.setdefault(
+    "SUMP_SETTINGS_FILE", os.path.join(tempfile.gettempdir(), "sump_test_settings.json")
+)
+# 测试环境：HF 离线（fastembed 初始化会访问 huggingface.co，无网时长时间等待）
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 from sump.config import Config
 from sump.core.context import Context
@@ -16,7 +23,9 @@ from sump.tools.registry import ToolRegistry
 
 
 @pytest.fixture
-def config(tmp_path) -> Config:
+def config(tmp_path, monkeypatch) -> Config:
+    # 隔离全局运行时设置到临时目录（写读均不影响项目）
+    monkeypatch.setenv("SUMP_SETTINGS_FILE", str(tmp_path / "settings.json"))
     cfg = Config()
     # 隔离数据库路径，避免测试污染项目 data/ 目录
     memory = cfg._data.setdefault("memory", {})
@@ -33,6 +42,10 @@ def config(tmp_path) -> Config:
         node["db_path"] = str(tmp_path / filename)
     # 默认不启用主人标记过滤（专门测试用 owner_marker）
     memory["owner_marker"] = ""
+    # 隔离资产库（目录 + 索引库）
+    assets = cfg._data.setdefault("assets", {})
+    assets["dir"] = str(tmp_path / "assets")
+    assets["db_path"] = str(tmp_path / "assets.db")
     return cfg
 
 
@@ -100,3 +113,14 @@ def _isolated_event_bus(tmp_path):
     bus_module._singleton = bus_module.EventBus(str(tmp_path / "event.db"))
     yield
     bus_module._singleton = previous
+
+
+@pytest.fixture(autouse=True)
+def _no_mcp(monkeypatch):
+    """测试默认禁用 MCP 子进程（npx 冷启动慢且会泄漏，拖挂整个测试会话）。"""
+    from sump.tools.mcp.client import MCPClient
+
+    async def _disabled_connect(self, *args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("MCP disabled in tests")
+
+    monkeypatch.setattr(MCPClient, "connect", _disabled_connect)

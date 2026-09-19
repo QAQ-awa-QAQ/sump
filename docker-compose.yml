@@ -7,7 +7,9 @@ services:
       - "8765:8765"
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
-      - SUMP_ENV=${SUMP_ENV:-production}
+      - SUMP_ENV=${SUMP_ENV:-docker,local}   # 配置叠加：default → docker.yaml → local.yaml（凭据在 local.yaml）
     volumes:
       - ./data:/app/data        # 记忆/日志/模型持久化
       - ./skills:/app/skills    # 技能持久化
+      - ./assets:/app/assets    # Agent 资产库持久化（表情包等）
+      - ./configs:/app/configs  # 配置目录（docker.yaml 提供宿主机地址，local.yaml 提供 NapCat 凭据）

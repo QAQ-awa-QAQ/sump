@@ -1,6 +1,6 @@
 # SUMP 函数调用关系图
 
-> 版本: v0.2.0 | 更新: 2026-08-25
+> 版本: v0.2.0 | 更新: 2026-09-19
 
 ---
 
@@ -121,9 +121,12 @@ Vite + TypeScript SPA (src/frontend/)
   │    ├─ buildToolResult()         ← 工具结果终端风格
   │    ├─ buildThinkingIndicator()  ← 深度思考指示条
   │    └─ buildSecurityInfo()       ← 安全审批卡片
-  ├─ src/main.ts                    ← 主逻辑（会话管理/设置面板/流式聊天/事件路由）
+  ├─ src/main.ts                    ← 主逻辑（会话管理/设置中心/流式聊天/事件路由）
   └─ src/style.css                  ← 设计系统（DeepSeek 风格 / 居中布局 / 悬浮输入框）
 ```
+
+> 设置中心为独立全屏页面：左侧栏类别导航（会话偏好 + 11 个配置类别，hover 上移动画），
+> 点击类别后正文面板向右滑入；保存走 `PUT /api/settings`，重启走 `POST /api/restart`。
 
 ### SSE 事件类型（前端消费）
 
@@ -176,6 +179,7 @@ Vite + TypeScript SPA (src/frontend/)
 ### 3. `core/executor.py` — Executor（执行层）
 
 > 按 Plan 调度：工具调用循环 + 安全审查（Judge + Interceptor）+ 流式输出。
+> 工具定义默认仅首轮传递（`agent.tools_first_round_only`），每 `agent.tool_hint_every` 轮重新注入一次工具（含 list_tools 提示，对抗 agent 忘记工具）。
 > 安全回调三态返回值：`None`=API 挂起 / `True`=放行 / `False`=拒绝。
 
 | 方法 | 调用 | 被谁调用 |
@@ -289,6 +293,8 @@ Vite + TypeScript SPA (src/frontend/)
 | `MCPClient` | ✅ | MCP 协议：JSON-RPC 2.0 + stdio + 多服务器 + 工具发现 + Windows 自动 cmd 包装 |
 | `MCPTool` / `register_mcp_tools` | ✅ | MCP 工具包装 + inputSchema 转 OpenAI + 自动注册 |
 | `Sandbox` | ✅ | 超时 + 异常隔离执行 |
+| `WaitTool` | ✅ | 定时等待器（`asyncio.sleep` 阻断 agent loop，等待耗时任务，上限可配） |
+| `ToolIndexTool` | ✅ | 工具索引（返回可用工具列表，agent 忘记工具时查询） |
 | `DateTimeTool` | ⚠️ | 桩 |
 | `FileTool` | ⚠️ | 桩 |
 | `SearchTool` | ⚠️ | 桩 |
@@ -339,7 +345,7 @@ Vite + TypeScript SPA (src/frontend/)
 | `HookSystem` | ✅ | `on()`, `emit()` 事件钩子 |
 | `EventBus` | ✅ | 广播 + 记账，单例 `get_event_bus()` |
 | `AgentEvents` | ✅ | Agent 生命周期事件常量（消息/回复/工具/审批） |
-| `NapCatPlugin` | ✅ | QQ 适配：正向 WS + 零信任主人 + 数字审批 + 群聊自主插话 + 图片识别 |
+| `NapCatPlugin` | ✅ | QQ 适配：正向 WS + 零信任主人 + 审批推主人私聊（标注来源群聊+发起人，FIFO 响应）+ 数字审批 + 群聊自主插话 + 图片识别 |
 | `SUMPAPI` | ⚠️ | `subscribe()`, `publish()`（兼容保留，未使用） |
 | `LoggerPlugin` | ⚠️ | 内置日志记录插件（未接入） |
 | `setup_logger()` | ✅ | 分级日志初始化 |

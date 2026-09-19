@@ -14,7 +14,7 @@ class Session:
         self.created_at = datetime.now(timezone.utc)
         self.messages: list[dict[str, str]] = []
         self.settings: dict[str, Any] = {
-            "model": "deepseek-v4-flash",
+            "model": "deepseek-flash",
             "reasoning_effort": "high",
             "thinking_enabled": False,
         }

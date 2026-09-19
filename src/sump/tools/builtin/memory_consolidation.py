@@ -84,6 +84,10 @@ class MemoryConsolidationTool(Tool):
             max_bytes=int(config.get("memory.soul.max_bytes", 5000)),
         )
 
+    def apply_settings(self, settings: dict[str, Any]) -> None:
+        """设置中心变更后：热更新本工具使用的 LLM 客户端（长生命周期实例）。"""
+        self._llm._backend.apply_settings(settings)
+
     async def execute(self, **kwargs: Any) -> str:
         """执行记忆整理（纯增量）：只处理上次之后新增的数据。"""
         archived_sessions = 0

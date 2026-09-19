@@ -27,6 +27,12 @@ data/models/
 data/*.db
 node_modules/
 
+# 运行时设置（含 API Key，勿提交）
+data/settings.json
+
+# Agent 资产库（本地数据，可手工维护）
+assets/
+
 # UV
 uv.lock
 

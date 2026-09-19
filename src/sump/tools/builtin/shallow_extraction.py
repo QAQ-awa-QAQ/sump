@@ -10,6 +10,7 @@ from typing import Any
 
 from sump.memory._llm_json import chat_flash_json
 from sump.tools.base import Tool
+from sump.types import content_to_text
 
 
 class ShallowExtractionTool(Tool):
@@ -57,7 +58,7 @@ class ShallowExtractionTool(Tool):
         if self._owner_marker:
             owner_msgs = [
                 m for m in msgs
-                if self._owner_marker in str(m.get("content", ""))
+                if self._owner_marker in content_to_text(m.get("content", ""))
             ]
             if not owner_msgs:
                 return True, "无主人消息可提炼"
@@ -165,7 +166,7 @@ class ShallowExtractionTool(Tool):
     def _format_message(self, m: dict[str, Any]) -> str:
         """把单条消息格式化成一行（工具调用只保留工具名）。"""
         role = m.get("role", "")
-        content = m.get("content", "")
+        content = content_to_text(m.get("content", ""))
         tool_calls = m.get("tool_calls")
         if tool_calls:
             names = [

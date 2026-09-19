@@ -8,15 +8,21 @@ NapCat 作为 WS 服务端，本插件作为客户端连接其正向 WS 端口�
 """
 
 import asyncio
+import base64
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from sump.agent import Agent
 from sump.config import Config
 from sump.event import AgentEvents, get_event_bus
+from sump.tools.builtin.qq_image import SendQQImageTool
 
 logger = logging.getLogger("sump.napcat")
+
+# 单图上限（DeepSeek 文档：base64 图片最大 32 MiB）
+_MAX_IMAGE_BYTES = 32 * 1024 * 1024
 
 
 class NapCatPlugin:
@@ -31,7 +37,8 @@ class NapCatPlugin:
         self._name = str(self._config.get("napcat.name", "星宝") or "星宝")
         self._bus = get_event_bus()
         self._agents: dict[str, Agent] = {}
-        self._pending_approval: dict[str, str] = {}  # session_id -> call_id
+        self._pending_approval: dict[str, dict[str, str]] = {}  # session_id -> {"call_id", "source"}
+        self._pending_source: dict[str, str] = {}  # session_id -> 审批来源标注
         self._locks: dict[str, asyncio.Lock] = {}  # session_id -> 处理锁（防并发）
         self._ws: Any = None
         self._task: asyncio.Task[None] | None = None
@@ -116,15 +123,15 @@ class NapCatPlugin:
         message_type = data.get("message_type", "private")
         user_id = str(data.get("user_id", ""))
         text = self._extract_text(data.get("message"))
-        image_urls = self._extract_image_urls(data.get("message"))
-        if image_urls:
-            local_parts: list[str] = []
-            for u in image_urls:
-                local = await self._download_image(u) or u
-                local_parts.append(local)
-            img_part = " ".join(f"[图片] {p}" for p in local_parts)
-            text = f"{text}\n{img_part}" if text else img_part
-        if not text or not user_id:
+        images: list[str] = []
+        for u in self._extract_image_urls(data.get("message")):
+            data_url = await self._download_image_data_url(u)
+            if data_url:
+                images.append(data_url)
+            else:
+                # 下载失败降级：文本占位，模型仍知道这条消息带过图片
+                text = f"{text}\n[图片]" if text else "[图片]"
+        if (not text and not images) or not user_id:
             return
 
         if message_type == "group":
@@ -141,43 +148,51 @@ class NapCatPlugin:
             await self._send(reply_ctx, "抱歉，你不是授权用户，已拒绝执行。")
             return
 
-        # 审批响应（仅主人）：1=同意 / 2=拒绝
+        # 审批响应（仅主人私聊）：1=同意 / 2=拒绝，按挂起顺序 FIFO
         if (
             text in ("1", "2")
+            and message_type == "private"
             and self._is_owner(user_id)
-            and session_id in self._pending_approval
+            and self._pending_approval
         ):
-            call_id = self._pending_approval.pop(session_id, None)
-            if call_id:
-                async with self._get_lock(session_id):
-                    await self._get_agent(session_id).approve_and_continue(call_id, text == "1")
+            sid, pending = next(iter(self._pending_approval.items()))
+            self._pending_approval.pop(sid, None)
+            async with self._get_lock(sid):
+                await self._get_agent(sid).approve_and_continue(
+                    pending["call_id"], text == "1"
+                )
             return
 
         if message_type == "group":
-            await self._handle_group_message(data, session_id, text, user_id)
+            await self._handle_group_message(data, session_id, text, user_id, images)
         else:
-            await self._handle_private_message(session_id, text)
+            await self._handle_private_message(session_id, text, images)
 
-    async def _handle_private_message(self, session_id: str, text: str) -> None:
+    async def _handle_private_message(
+        self, session_id: str, text: str, images: list[str]
+    ) -> None:
         """私聊：记录并直接回复（1v1，逐条回应）。"""
         async with self._get_lock(session_id):
+            self._pending_source[session_id] = "私聊"
             await self._bus.emit(
                 AgentEvents.MESSAGE_RECEIVED, session_id=session_id, content=text, source="napcat"
             )
             agent = self._get_agent(session_id)
             try:
-                async for _ in agent.run_stream(text):
+                async for _ in agent.run_stream(text, images=images):
                     pass  # 回复通过 agent.reply 钩子发回
             except Exception as exc:  # noqa: BLE001
                 logger.error("Agent 处理失败：%s", exc)
 
     async def _handle_group_message(
-        self, data: dict[str, Any], session_id: str, text: str, user_id: str
+        self, data: dict[str, Any], session_id: str, text: str, user_id: str, images: list[str]
     ) -> None:
         """群聊：记录所有消息，智能体自主决定是否说话（@ 必回，星宝加权）。"""
         async with self._get_lock(session_id):
             agent = self._get_agent(session_id)
             nickname = str((data.get("sender") or {}).get("nickname", user_id))
+            group_id = str(data.get("group_id") or session_id[len("group_"):])
+            self._pending_source[session_id] = f"群聊 {group_id} · {nickname}"
 
             # 记录会话：主人消息带标记（供记忆提炼只针对主人）
             owner_marker = str(self._config.get("memory.owner_marker", "·主人"))
@@ -185,7 +200,7 @@ class NapCatPlugin:
                 label = f"[{nickname}{owner_marker}]"
             else:
                 label = f"[{nickname}]"
-            agent.ctx.add_user_message(f"{label} {text}")
+            agent.ctx.add_user_message(f"{label} {text}", images=images)
 
             # 2. 决定是否说话
             at_me = self._is_at_me(data)
@@ -250,13 +265,16 @@ class NapCatPlugin:
         danger: str,
         **kwargs: Any,
     ) -> None:
-        """钩子：审批挂起 → 推送给主人（1 同意 / 2 拒绝）。"""
-        self._pending_approval[session_id] = call_id
-        ctx = self._reply_ctx(session_id)
+        """钩子：审批挂起 → 推送主人私聊（标注来源群聊 + 发起人）。"""
+        source = self._pending_source.get(session_id, "未知")
+        self._pending_approval[session_id] = {"call_id": call_id, "source": source}
+        ctx = self._owner_ctx()
         if ctx is None:
+            logger.warning("未配置主人 QQ 号（napcat.owner_id），审批无法推送")
             return
         msg = (
-            "⚠️ 待审批命令：\n"
+            "⚠️ 待审批命令\n"
+            f"来源：{source}\n"
             f"命令：{command}\n"
             f"意图：{summary or '未知'}\n"
             f"危险等级：{danger or '未知'}\n"
@@ -267,9 +285,9 @@ class NapCatPlugin:
     async def _on_approval_expired(
         self, session_id: str, call_id: str, **kwargs: Any
     ) -> None:
-        """钩子：审批超时 → 通知主人并继续执行。"""
+        """钩子：审批超时 → 通知主人私聊并继续执行。"""
         self._pending_approval.pop(session_id, None)
-        ctx = self._reply_ctx(session_id)
+        ctx = self._owner_ctx()
         if ctx is not None:
             await self._send(ctx, "审批超时，已自动拒绝。")
         agent = self._get_agent(session_id)
@@ -279,6 +297,12 @@ class NapCatPlugin:
                     pass  # 回复通过 agent.reply 钩子发回
         except Exception as exc:  # noqa: BLE001
             logger.error("审批超时后继续执行失败：%s", exc)
+
+    def _owner_ctx(self) -> dict[str, Any] | None:
+        """主人私聊回复上下文（审批推送目标）。"""
+        if not self._owner_id:
+            return None
+        return {"message_type": "private", "user_id": self._owner_id}
 
     def _reply_ctx(self, session_id: str) -> dict[str, Any] | None:
         """把 session_id 转成 OneBot 回复上下文（群/私聊）。"""
@@ -301,6 +325,28 @@ class NapCatPlugin:
         except Exception as exc:  # noqa: BLE001
             logger.error("发送 QQ 消息失败：%s", exc)
 
+    async def send_image_to(self, session_id: str, image_path: str, text: str = "") -> str | None:
+        """向指定会话发送本地图片（供 send_qq_image 工具调用）；失败返回错误信息。"""
+        ctx = self._reply_ctx(session_id)
+        if ctx is None:
+            return f"未知会话：{session_id}"
+        if self._ws is None:
+            return "QQ 未连接"
+        segments: list[dict[str, Any]] = [
+            {"type": "image", "data": {"file": Path(image_path).resolve().as_uri()}}
+        ]
+        if text:
+            segments.append({"type": "text", "data": {"text": text}})
+        try:
+            await self._ws.send(json.dumps(
+                {"action": "send_msg", "params": {**ctx, "message": segments}},
+                ensure_ascii=False,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("发送 QQ 图片失败：%s", exc)
+            return str(exc)
+        return None
+
     # ------------------------------------------------------------------
     # 工具
     # ------------------------------------------------------------------
@@ -310,8 +356,15 @@ class NapCatPlugin:
         if session_id not in self._agents:
             agent = Agent(self._config)
             agent.switch_session(session_id)
+            # QQ 专属能力：发送图片（表情包等）到当前会话
+            agent.tools.register(SendQQImageTool(self, session_id))
             self._agents[session_id] = agent
         return self._agents[session_id]
+
+    def apply_settings(self, settings: dict[str, Any]) -> None:
+        """设置中心变更后：热更新本插件已创建的 Agent 实例。"""
+        for agent in self._agents.values():
+            agent.apply_settings(settings)
 
     def _get_lock(self, session_id: str) -> asyncio.Lock:
         """每个会话一把处理锁，串行化该会话的消息处理。"""
@@ -351,16 +404,10 @@ class NapCatPlugin:
                     urls.append(url)
         return urls
 
-    async def _download_image(self, url: str) -> str | None:
-        """下载 QQ 图片到本地文件（内网 URL 云端不可达），返回本地路径；失败返回 None。"""
-        import hashlib
-        import time
-        from pathlib import Path
-
+    async def _download_image_data_url(self, url: str) -> str | None:
+        """下载 QQ 图片并转 base64 data URL（内网 URL 云端不可达，直发模型）；失败返回 None。"""
         import httpx
 
-        img_dir = Path(str(self._config.get("napcat.image_dir", "data/napcat_images")))
-        img_dir.mkdir(parents=True, exist_ok=True)
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.get(url)
@@ -370,20 +417,21 @@ class NapCatPlugin:
             logger.warning("下载 QQ 图片失败：%s %s", url, exc)
             return None
 
-        name = hashlib.md5(data).hexdigest()[:16] + _guess_image_ext(data)
-        path = img_dir / name
-        path.write_bytes(data)
-        return str(path)
+        if len(data) > _MAX_IMAGE_BYTES:
+            logger.warning("QQ 图片超过 32MiB 上限，跳过：%s", url)
+            return None
+        b64 = base64.b64encode(data).decode("utf-8")
+        return f"data:{_guess_image_mime(data)};base64,{b64}"
 
 
-def _guess_image_ext(data: bytes) -> str:
-    """按文件实际内容判断图片扩展名。"""
+def _guess_image_mime(data: bytes) -> str:
+    """按文件实际内容判断图片 MIME 类型（与 DeepSeek 支持格式对齐）。"""
     if data.startswith(b"\xff\xd8\xff"):
-        return ".jpg"
+        return "image/jpeg"
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
+        return "image/png"
     if data.startswith(b"GIF8"):
-        return ".gif"
+        return "image/gif"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return ".webp"
-    return ".jpg"
+        return "image/webp"
+    return "image/jpeg"

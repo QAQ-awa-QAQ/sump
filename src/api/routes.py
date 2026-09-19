@@ -1,6 +1,11 @@
 """SUMP API 路由 —— REST + SSE 流式"""
 
 import json
+import os
+import sys
+import threading
+import time
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -11,6 +16,8 @@ from sump.agent import Agent
 from sump.config import Config
 from sump.core.sleep import get_sleep_manager
 from sump.memory.archive import ArchiveMemory
+from sump.settings import CONFIG_SCHEMA, mask_secret, save_settings, schema_map
+from sump.types import content_to_text
 
 router = APIRouter(prefix="/api")
 config = Config()
@@ -45,9 +52,10 @@ class CreateSessionRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
-    model: str = "deepseek-v4-flash"
+    model: str = "deepseek-flash"
     reasoning_effort: str = "high"
     thinking_enabled: bool = False
+    images: list[str] = []   # data:image/...;base64 或 http(s) 链接，随用户消息直发主模型
 
 class UpdateSettingsRequest(BaseModel):
     model: str | None = None
@@ -108,8 +116,38 @@ async def rename_session(session_id: str, body: RenameSessionRequest):
 
 # ---- 对话（流式 SSE） ----
 
+# DeepSeek V4.1 图片限制（与官方文档对齐）
+_MAX_IMAGE_BYTES = 32 * 1024 * 1024        # 单图上限 32 MiB
+_MAX_TOTAL_IMAGE_BYTES = 48 * 1024 * 1024  # 请求体上限 48 MiB
+_MAX_IMAGE_COUNT = 600                     # 单次最多 600 张
+
+
+def _validate_images(images: list[str]) -> None:
+    """校验图片为 data URL / http(s) 外链且不超限，不合规抛 400。"""
+    if len(images) > _MAX_IMAGE_COUNT:
+        raise HTTPException(400, f"图片数量超限（最多 {_MAX_IMAGE_COUNT} 张）")
+    total = 0
+    for img in images:
+        if img.startswith(("http://", "https://")):
+            if len(img) > 8192:
+                raise HTTPException(400, "图片外链过长（最多 8192 字符）")
+            continue
+        if not img.startswith("data:image/"):
+            raise HTTPException(400, "图片格式无效：需为 data:image/... 或 http(s) 链接")
+        sep = img.find(",")
+        if sep < 0:
+            raise HTTPException(400, "图片 data URL 缺少 base64 数据")
+        size = (len(img) - sep - 1) * 3 // 4  # base64 → 原始字节数（近似）
+        if size > _MAX_IMAGE_BYTES:
+            raise HTTPException(400, "单张图片超过 32MiB 上限")
+        total += size
+    if total > _MAX_TOTAL_IMAGE_BYTES:
+        raise HTTPException(400, "图片总大小超过 48MiB 上限")
+
+
 @router.post("/chat/{session_id}")
 async def chat(session_id: str, body: ChatRequest):
+    _validate_images(body.images)
     agent = _get_agent(session_id)
     # 每个 session 有独立 Agent，无需 switch_session
     agent.llm._backend._model = body.model
@@ -128,11 +166,11 @@ async def chat(session_id: str, body: ChatRequest):
                 # ── 会话命名：首条消息即写入初始名称 ──
                 is_first = len(agent.memory.load_messages(session_id, limit=1)) == 0
                 if is_first:
-                    initial_name = body.message[:50]
+                    initial_name = body.message.strip()[:50] or "[图片]"
                     agent.memory.upsert_session_name(session_id, initial_name)
                     yield f"data: {json.dumps({'type': 'session_name', 'session_id': session_id, 'name': initial_name}, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
-                async for event in agent.run_stream(body.message):
+                async for event in agent.run_stream(body.message, images=body.images):
                     data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
                     yield f"data: {data}\n\n"
 
@@ -168,7 +206,7 @@ async def _summarize_title(agent: Agent, user_input: str) -> str:
         reply = ""
         for m in reversed(agent.ctx.messages):
             if m.role == "assistant" and m.content:
-                reply = m.content
+                reply = content_to_text(m.content)
                 break
 
         prompt = (
@@ -192,9 +230,87 @@ async def _summarize_title(agent: Agent, user_input: str) -> str:
 @router.get("/models")
 async def list_models():
     return [
-        {"id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro", "description": "最强推理能力"},
-        {"id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash", "description": "快速响应"},
+        {
+            "id": "deepseek-flash", "name": "DeepSeek V4.1 Flash",
+            "description": "快速响应 · 支持图片",
+        },
+        {
+            "id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro",
+            "description": "最强推理能力 · 不支持图片",
+        },
     ]
+
+
+# ---- 设置中心（全局运行时设置） ----
+
+# 设置变更刷新器（如 NapCat 插件注册；保存后用于热更新已创建的 Agent 实例）
+_settings_refreshers: list[Callable[[dict[str, Any]], None]] = []
+
+
+def register_settings_refresher(refresher: Callable[[dict[str, Any]], None]) -> None:
+    """注册设置变更刷新器（进程启动时由 server 等调用）。"""
+    _settings_refreshers.append(refresher)
+
+
+class GlobalSettingsRequest(BaseModel):
+    settings: dict[str, Any] = {}
+
+
+def _settings_view() -> dict[str, Any]:
+    """设置中心视图：schema + 当前生效值（敏感值打码）。"""
+    cfg = Config()  # 重新加载以叠加最新 settings.json
+    values: dict[str, Any] = {}
+    for item in CONFIG_SCHEMA:
+        key = item["key"]
+        value = cfg.get(key, item.get("default"))
+        if item["type"] == "secret":
+            raw = str(value or "")
+            if key == "deepseek.api_key" and not raw:
+                raw = os.getenv("DEEPSEEK_API_KEY", "")
+            values[key] = mask_secret(raw) if raw else ""
+        else:
+            values[key] = value
+    return {"schema": CONFIG_SCHEMA, "values": values}
+
+
+@router.get("/settings")
+async def get_settings() -> dict[str, Any]:
+    return _settings_view()
+
+
+@router.put("/settings")
+async def update_settings(body: GlobalSettingsRequest) -> dict[str, Any]:
+    unknown = set(body.settings) - set(schema_map())
+    if unknown:
+        raise HTTPException(400, f"不支持设置项：{', '.join(sorted(unknown))}")
+    saved = save_settings(body.settings)
+    # 热更新：仅 LLM 后端支持的键（api_key/base_url/model/vision_model/flash_model）立即生效
+    deepseek_section: dict[str, Any] = {
+        key[len("deepseek."):]: value
+        for key, value in saved.items()
+        if key.startswith("deepseek.")
+    }
+    if deepseek_section:
+        for agent in _session_agents.values():
+            agent.apply_settings(deepseek_section)
+        for refresher in _settings_refreshers:
+            try:
+                refresher(deepseek_section)
+            except Exception:  # noqa: BLE001
+                pass
+    return _settings_view()
+
+
+@router.post("/restart")
+async def restart_server() -> dict[str, Any]:
+    """重启服务进程（用于应用需重启生效的配置变更）。"""
+
+    def _do_restart() -> None:
+        time.sleep(0.5)  # 先让响应返回，再重启
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    threading.Thread(target=_do_restart, daemon=True).start()
+    return {"ok": True, "message": "服务正在重启"}
 
 
 # ---- 安全审批 ----

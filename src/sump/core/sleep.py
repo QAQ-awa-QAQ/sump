@@ -13,6 +13,7 @@ import asyncio
 import time
 from datetime import datetime, time as dtime
 from enum import Enum
+from typing import Any
 
 from sump.config import Config
 from sump.core.models import LLMClient
@@ -57,6 +58,10 @@ class SleepManager:
         self._tick_task: asyncio.Task[None] | None = None
         self._consolidate_task: asyncio.Task[None] | None = None
         self._tool = MemoryConsolidationTool(self.config, LLMClient(self.config))
+
+    def apply_settings(self, settings: dict[str, Any]) -> None:
+        """设置中心变更后：热更新巩固工具的 LLM 客户端。"""
+        self._tool.apply_settings(settings)
 
     # ------------------------------------------------------------------
     # 对外接口

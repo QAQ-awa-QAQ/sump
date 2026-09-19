@@ -6,12 +6,12 @@ from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 from sump.core.context import Context
-from sump.core.models import LLMClient
+from sump.core.models import LLMClient, sanitize_marked_output
 from sump.core.planner import Plan
 from sump.security.interceptor import Interceptor
 from sump.security.judge import Judge
 from sump.tools.registry import ToolRegistry
-from sump.types import Message
+from sump.types import Message, content_to_text
 
 # 审批回调类型
 # - CLI: (command, summary, danger) -> True=放行, False=拒绝, None=API模式挂起
@@ -33,6 +33,8 @@ class Executor:
         on_approval_pending: ApprovalSink = None,
         evaluator: Any = None,
         arbiter: Any = None,
+        tools_first_round_only: bool = True,
+        tool_hint_every: int = 7,
     ) -> None:
         self.ctx = ctx
         self.llm = llm
@@ -41,6 +43,8 @@ class Executor:
         self._on_approval_pending = on_approval_pending
         self._evaluator = evaluator
         self._arbiter = arbiter
+        self._tools_first_round_only = tools_first_round_only
+        self._tool_hint_every = tool_hint_every
         self._should_break = False
 
     # ------------------------------------------------------------------
@@ -58,10 +62,28 @@ class Executor:
         schemas = self.tools.get_schemas()
 
         for round_idx in range(plan.max_rounds):
-            _tools: Any = schemas if round_idx == 0 else None
+            # 工具定义默认仅首轮传递（省 token）；开关关闭后每轮都传；
+            # 每 tool_hint_every 轮也重新注入工具（对抗 agent 忘记工具）。
+            is_hint_round = (
+                self._tool_hint_every > 0
+                and round_idx > 0
+                and round_idx % self._tool_hint_every == 0
+            )
+            send_tools = round_idx == 0 or not self._tools_first_round_only or is_hint_round
+            _tools: Any = schemas if send_tools else None
             print(f"[EXEC] round={round_idx} msgs={len(self.ctx.messages)} tools={_tools is not None}", flush=True)
 
-            result = await self.llm.chat_full(self.ctx.history, tools=_tools)
+            history = self.ctx.history
+            if is_hint_round:
+                history = history + [{
+                    "role": "user",
+                    "content": (
+                        "【系统提示】对话已进行多轮，如需回顾可用工具，"
+                        "可调用 list_tools 工具查看完整工具列表及用途。"
+                    ),
+                }]
+
+            result = await self.llm.chat_full(history, tools=_tools)
 
             if result.get("tool_calls"):
                 tc_ids = [tc["id"] for tc in result["tool_calls"]]
@@ -101,7 +123,7 @@ class Executor:
         """取第一条用户消息作为任务描述。"""
         for m in self.ctx.messages:
             if m.role == "user":
-                return m.content
+                return content_to_text(m.content)
         return ""
 
     def _recent_progress(self) -> str:
@@ -110,7 +132,7 @@ class Executor:
         for m in self.ctx.messages[-6:]:
             if m.role == "system":
                 continue
-            content = m.content or ""
+            content = content_to_text(m.content)
             if m.tool_calls:
                 names = [
                     t["function"]["name"]
@@ -163,6 +185,8 @@ class Executor:
             # ── 执行 / 审批（三路分支：approved=None→挂起, True→执行, False→拒绝）──
             tool_msg_added = False
             approved: bool | None = None
+            # 是否真正挂起等审批（非 shell 工具不参与审批，不能凭 approved 判空）
+            pending = False
             if sec_event:
                 if self._security_check:
                     approved = self._security_check(
@@ -172,6 +196,7 @@ class Executor:
                 if approved is None:
                     # API: 挂起等前端审批
                     if self._on_approval_pending:
+                        pending = True
                         import uuid as _uuid
                         call_id = _uuid.uuid4().hex[:8]
                         self._on_approval_pending(
@@ -229,8 +254,8 @@ class Executor:
                 yield {"type": "tool_result", "content": tr[:500]}
             processed_ids.append(tc_id)
 
-            # API 模式（approved=None）：挂起等前端审批
-            if approved is None:
+            # 真正挂起等审批：终止本轮（审批通过后由 __continue__ 恢复）
+            if pending:
                 self._crop_assistant_tool_calls(processed_ids)
                 self._should_break = True
                 return
@@ -291,6 +316,7 @@ class Executor:
             yield chunk
         self.ctx._append(Message(
             role="assistant",
-            content="".join(content_parts),
+            # 标记文本跨块残片兜底：全文级再清洗一次，绝不写入上下文
+            content=sanitize_marked_output("".join(content_parts)),
             reasoning_content="".join(reasoning_parts),
         ))

@@ -11,6 +11,7 @@ from typing import Any, TypeVar
 from openai import AsyncOpenAI
 
 from sump.config import Config
+from sump.settings import load_settings
 
 logger = logging.getLogger("sump.deepseek")
 
@@ -19,6 +20,33 @@ _T = TypeVar("_T")
 _RETRYABLE = (
     "rate_limit", "server_error", "timeout", "connection",
 )
+
+# 支持多模态输入的模型：图片作为 content 块直发主模型，无需额外识图工具
+_VISION_CAPABLE_MODELS = ("deepseek-flash",)
+
+# 模型输出偶尔泄漏"标记文本"形态的伪工具调用：词元被全角竖线（U+FF5C，
+# 偶见半角竖线）包裹，外观像 XML 标签。此类内容按硬性限制处理：
+#   1) 一律不解析为工具调用（禁止使用，见 _parse_xml_tool_calls）；
+#   2) 输出前清洗剥离，绝不外发给用户（QQ/CLI），也不写入对话上下文。
+_MARK_TOKEN = re.compile(r"[\uff5c|]\s{0,2}DSML\s{0,2}[\uff5c|]")
+
+
+def sanitize_marked_output(text: str) -> str:
+    """清洗模型输出中泄漏的标记文本（含标记的整行剔除）。
+
+    - 不含标记特征：原样返回；
+    - 含标记特征：剔除相关行并去除首尾空白（可能整段清空）。
+    """
+    if not _MARK_TOKEN.search(text):
+        return text
+    kept = [ln for ln in text.splitlines() if not _MARK_TOKEN.search(ln)]
+    return "\n".join(kept).strip()
+
+
+def supports_vision(model: str) -> bool:
+    """主模型是否支持多模态输入（图片直通，无需 image_vision 工具）。"""
+    name = str(model or "").lower()
+    return any(name.startswith(prefix) for prefix in _VISION_CAPABLE_MODELS)
 
 
 class DeepSeekClient:
@@ -34,17 +62,55 @@ class DeepSeekClient:
 
     def __init__(self, config: Config) -> None:
         self._config = config
-        api_key = config.get("deepseek.api_key") or os.getenv("DEEPSEEK_API_KEY", "")
-        base_url = config.get("deepseek.base_url", "https://api.deepseek.com")
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self._model = config.get("deepseek.model", "deepseek-v4-flash")
-        self._vision_model = config.get("deepseek.vision_model", "deepseek-v4-flash-vision-exp")
+        # settings.json 是最高优先级层，但传入的 config 可能只是启动时的快照
+        # （长生命周期组件持有旧 config，用户设置中心保存后不会自动更新）。
+        # 对设置中心管理的字段再叠加一次最新值，保证"保存之后才创建"的客户端
+        # （新会话 / 新 QQ 群 Agent 等）不会拿到过期的 Key 或模型名。
+        fresh = load_settings().get("deepseek", {})
+        self._api_key = str(
+            fresh.get("api_key")
+            or config.get("deepseek.api_key")
+            or os.getenv("DEEPSEEK_API_KEY", "")
+        )
+        self._base_url = str(
+            fresh.get("base_url")
+            or config.get("deepseek.base_url", "https://api.deepseek.com")
+        )
+        # 空 Key 时用占位符保证客户端可构造（服务可启动，用户可在设置中心填 Key）
+        self._client = AsyncOpenAI(
+            api_key=self._api_key or "sk-not-configured", base_url=self._base_url
+        )
+        self._model = fresh.get("model") or config.get("deepseek.model", "deepseek-flash")
+        self._vision_model = (
+            fresh.get("vision_model")
+            or config.get("deepseek.vision_model", "deepseek-flash")
+        )
+        self._flash_model = str(
+            fresh.get("flash_model") or config.get("deepseek.flash_model", "deepseek-flash")
+        )
         self._reasoning_effort = config.get("deepseek.reasoning_effort", "high")
         self._thinking_enabled = config.get("deepseek.thinking_enabled", False)
         self._max_tokens = config.get("deepseek.max_tokens", 4096)
         self._temperature = config.get("deepseek.temperature", 1.0)
         self._max_retries = config.get("deepseek.max_retries", 3)
         self._retry_delay = config.get("deepseek.retry_delay", 1.0)
+
+    def apply_settings(self, settings: dict[str, Any]) -> None:
+        """应用设置中心变更（热更新：重建 API 客户端 + 更新各环节模型名）。"""
+        api_key = str(settings.get("api_key") or self._api_key)
+        base_url = str(settings.get("base_url") or self._base_url)
+        if api_key != self._api_key or base_url != self._base_url:
+            self._api_key = api_key
+            self._base_url = base_url
+            self._client = AsyncOpenAI(
+                api_key=api_key or "sk-not-configured", base_url=base_url
+            )
+        if settings.get("model"):
+            self._model = str(settings["model"])
+        if settings.get("vision_model"):
+            self._vision_model = str(settings["vision_model"])
+        if settings.get("flash_model"):
+            self._flash_model = str(settings["flash_model"])
 
     # ------------------------------------------------------------------
     # 重试 + 公共构建
@@ -114,6 +180,14 @@ class DeepSeekClient:
                 tool_calls = self._parse_xml_tool_calls(content)
                 if tool_calls:
                     content = ""
+            # 标记文本形态的伪调用：不解析、不执行，直接清洗剥离（禁止使用）
+            cleaned = sanitize_marked_output(content)
+            if cleaned != content:
+                logger.warning(
+                    "检测到模型输出泄漏标记文本，已清洗（%d→%d 字符）",
+                    len(content), len(cleaned),
+                )
+                content = cleaned
             return {
                 "content": content,
                 "reasoning_content": getattr(msg, "reasoning_content", None),
@@ -137,7 +211,7 @@ class DeepSeekClient:
     ) -> str:
         """轻量快速调用：独立会话 + flash 模型 + 不思考，文字进文字出。"""
         kwargs: dict[str, Any] = {
-            "model": "deepseek-v4-flash",
+            "model": self._flash_model,
             "messages": [{"role": "user", "content": text}],
             "stream": False,
             "max_tokens": max_tokens,
@@ -202,7 +276,10 @@ class DeepSeekClient:
                         "arguments": tc.function.arguments if tc.function else "",
                     }}
             elif delta.content:
-                yield {"type": "content", "text": delta.content}
+                # 逐块清洗（跨块残片由执行器/Agent 的全文级清洗兜底）
+                text = sanitize_marked_output(delta.content)
+                if text:
+                    yield {"type": "content", "text": text}
 
     # ------------------------------------------------------------------
     # 内部工具
@@ -234,6 +311,9 @@ class DeepSeekClient:
             <tool_calls><invoke name="image_vision">
             <parameter name="image">...</parameter>
             </invoke></tool_calls>
+
+        注意：被特殊标记词元（全角竖线包裹）的伪调用文本一律不解析，
+        属于禁止使用形态，只做清洗剥离（见 sanitize_marked_output）。
         """
         if "<tool_calls>" not in content:
             return None
