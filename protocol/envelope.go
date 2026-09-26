@@ -7,6 +7,7 @@ type Envelope struct {
 	V       int                `msgpack:"v"`                 // 协议版本
 	ID      string             `msgpack:"id"`                // 消息 id（请求 → 响应配对）
 	Trace   string             `msgpack:"trace,omitempty"`   // 链路 id（同一用户请求的全链共享）
+	Boss    string             `msgpack:"boss,omitempty"`    // 老板：本跳“面向谁工作”（结果归属；不强制沿用上游）
 	Type    string             `msgpack:"type"`              // 消息类型 = 动作
 	From    string             `msgpack:"from"`              // 来源服务
 	To      string             `msgpack:"to"`                // 目标服务

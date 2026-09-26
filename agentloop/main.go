@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/QAQ-awa-QAQ/sump/agentloop/llm"
 	"github.com/QAQ-awa-QAQ/sump/agentloop/loop"
 )
 
@@ -16,11 +17,18 @@ func main() {
 	name := flag.String("name", "agentloop", "服务名")
 	addr := flag.String("addr", "127.0.0.1:9101", "监听地址（host:port）")
 	center := flag.String("center", "ws://127.0.0.1:9000/ws", "设置中心 WS 地址")
+	llmBase := flag.String("llm-base", "https://api.deepseek.com", "LLM API 地址（OpenAI 兼容）")
+	llmKey := flag.String("llm-key", os.Getenv("DEEPSEEK_API_KEY"), "LLM API Key（默认取环境变量 DEEPSEEK_API_KEY）")
+	llmModel := flag.String("llm-model", "deepseek-chat", "LLM 模型名")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "[agentloop] ", log.LstdFlags|log.Lmicroseconds)
+	if *llmKey == "" {
+		logger.Printf("警告: 未配置 LLM Key（-llm-key 或环境变量 DEEPSEEK_API_KEY），user_message 将无法推理")
+	}
+	llmClient := llm.NewDeepSeekClient(*llmBase, *llmKey, *llmModel)
 
-	l := loop.New(loop.Config{Name: *name, Listen: *addr, Center: *center}, logger)
+	l := loop.New(loop.Config{Name: *name, Listen: *addr, Center: *center, LLM: llmClient}, logger)
 	if err := l.Start(context.Background()); err != nil {
 		logger.Fatalf("启动失败: %v", err)
 	}

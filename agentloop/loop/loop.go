@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/vmihailenco/msgpack/v5"
 
+	"github.com/QAQ-awa-QAQ/sump/agentloop/llm"
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 )
 
@@ -28,6 +29,7 @@ type Config struct {
 	Listen            string        // 监听地址 host:port
 	Center            string        // 设置中心 WS 地址
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
+	LLM               llm.Client    // 单步推理的 LLM 客户端（user_message / step 必需；nil 时相关动作报错）
 }
 
 // ActionFunc 处理一次跳转动作，返回的数据会作为响应 payload 的 data。
@@ -62,6 +64,8 @@ func New(cfg Config, logger *log.Logger) *Loop {
 	}
 	l.actions["echo"] = l.actionEcho
 	l.actions["debug_jump"] = l.actionDebugJump
+	l.actions["user_message"] = l.actionUserMessage
+	l.actions["step"] = l.actionStep
 	return l
 }
 
@@ -127,6 +131,7 @@ func (l *Loop) register(ctx context.Context) error {
 		Addr:        l.selfURL,
 		Description: "LLM 单步推理与跳转决策（M1 骨架）",
 		Provides: []protocol.Provide{
+			{Action: "user_message", Input: "用户消息文本 {text}", Output: "受理回执（最终结果由 deliver 另行送达）"},
 			{Action: "echo", Input: "任意", Output: "原样返回（测试用）"},
 			{Action: "debug_jump", Input: "{to, action, input}", Output: "目标服务的响应数据（调试用）"},
 		},
