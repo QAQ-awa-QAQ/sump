@@ -5,3 +5,7 @@ bin/
 # 本地配置（密钥等，不入库）
 local.yaml
 local.*.yaml
+
+# 本地数据（记忆库等，不入库）
+data/
+*.db

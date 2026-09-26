@@ -17,6 +17,7 @@ func main() {
 	name := flag.String("name", "agentloop", "服务名")
 	addr := flag.String("addr", "127.0.0.1:9101", "监听地址（host:port）")
 	center := flag.String("center", "ws://127.0.0.1:9000/ws", "设置中心 WS 地址")
+	memorySvc := flag.String("memory", "memory", "记忆服务名（完全启动链的另一半）")
 	llmBase := flag.String("llm-base", "https://api.deepseek.com", "LLM API 地址（OpenAI 兼容）")
 	llmKey := flag.String("llm-key", os.Getenv("DEEPSEEK_API_KEY"), "LLM API Key（默认取环境变量 DEEPSEEK_API_KEY）")
 	llmModel := flag.String("llm-model", "deepseek-chat", "LLM 模型名")
@@ -28,7 +29,7 @@ func main() {
 	}
 	llmClient := llm.NewDeepSeekClient(*llmBase, *llmKey, *llmModel)
 
-	l := loop.New(loop.Config{Name: *name, Listen: *addr, Center: *center, LLM: llmClient}, logger)
+	l := loop.New(loop.Config{Name: *name, Listen: *addr, Center: *center, Memory: *memorySvc, LLM: llmClient}, logger)
 	if err := l.Start(context.Background()); err != nil {
 		logger.Fatalf("启动失败: %v", err)
 	}

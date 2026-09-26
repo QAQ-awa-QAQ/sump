@@ -1,7 +1,7 @@
 package tests
 
-// M2.4：假 DeepSeek 驱动的真进程端到端——settings-center + agentloop + 假 boss。
-// 零外网依赖：LLM 由本进程内的 OpenAI 兼容替身扮演。
+// M3：假 DeepSeek 驱动的真进程端到端——settings-center + agentloop + memory + 假 boss。
+// 零外网依赖：LLM 由本进程内的 OpenAI 兼容替身扮演；验证完全启动链与记忆注入。
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -198,21 +199,33 @@ func (b *e2eBoss) register(t *testing.T, centerURL string) *protocol.Client {
 	return c
 }
 
-// TestInferChainE2E 真进程版全链：user_message → 工具跳转 → 自跳 → deliver。
+// TestInferChainE2E 真进程版全链（完全启动）：user_message → 记忆往返（recall → resume）
+// → 工具跳转 → 自跳 → 记忆往返 → deliver；并以预置会话历史验证记忆注入。
 func TestInferChainE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
 	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/agentloop")
+	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
 
 	fakeLLM := startFakeDeepSeek(t)
 	boss := startE2EBoss(t)
 
 	scPort := freePort(t)
 	alPort := freePort(t)
+	memPort := freePort(t)
 	centerURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", scPort)
 	agentURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", alPort)
+	memoryURL := fmt.Sprintf("ws://127.0.0.1:%d/ws", memPort)
 
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
+
+	// memory 先启动（agentloop 需要从名册解析到它）。
+	startProc(t, memBin,
+		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
+		"-center", centerURL,
+		"-db", filepath.Join(t.TempDir(), "memory.db"),
+	)
+	waitWSReady(t, memoryURL, 60*time.Second)
 
 	// boss 先进名册，再启动 agentloop。
 	bossClient := boss.register(t, centerURL)
@@ -227,13 +240,47 @@ func TestInferChainE2E(t *testing.T) {
 	)
 	waitWSReady(t, agentURL, 60*time.Second)
 
-	// 等 agentloop 注册完成（名册可见）。
+	// 等名册齐全。
 	obs, err := protocol.Dial(centerURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = obs.Close() })
 	waitRosterHas(t, obs, "agentloop", 60*time.Second)
+	waitRosterHas(t, obs, "memory", 10*time.Second)
+
+	// 预置会话历史（上一轮的对话）——验证 recall 会把它注入 LLM 请求。
+	mc, err := protocol.Dial(memoryURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mc.Close() })
+	ctx0, cancel0 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel0()
+	for _, sp := range []protocol.StorePayload{
+		{ConversationID: "e2e-conv", Role: "user", Content: "上次谈话内容A"},
+		{ConversationID: "e2e-conv", Role: "assistant", Content: "上次答复B"},
+	} {
+		raw, err := protocol.EncodePayload(sp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env, err := protocol.NewEnvelope(protocol.TypeJump, "e2e", "memory", "", protocol.JumpPayload{Action: "store", Input: raw})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := mc.Call(ctx0, env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rp protocol.ResponsePayload
+		if err := resp.DecodePayload(&rp); err != nil {
+			t.Fatal(err)
+		}
+		if !rp.OK {
+			t.Fatalf("预置 store 失败: %s", rp.Error)
+		}
+	}
 
 	// 发起链：boss=e2e-boss。
 	ac, err := protocol.Dial(agentURL, nil)
@@ -242,7 +289,7 @@ func TestInferChainE2E(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ac.Close() })
 
-	raw, err := protocol.EncodePayload(map[string]any{"text": "你好"})
+	raw, err := protocol.EncodePayload(map[string]any{"text": "你好", "conversation_id": "e2e-conv"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,9 +326,24 @@ func TestInferChainE2E(t *testing.T) {
 		t.Fatalf("假 DeepSeek 调用次数 = %d, want 2", fakeLLM.Calls())
 	}
 	reqs := fakeLLM.Requests()
-	msgs, _ := reqs[1]["messages"].([]any)
+
+	// 第一轮请求：记忆块（预置会话历史）已被注入。
+	msgs1, _ := reqs[0]["messages"].([]any)
+	foundMemory := false
+	for _, m := range msgs1 {
+		mm, _ := m.(map[string]any)
+		if s, _ := mm["content"].(string); strings.Contains(s, "【记忆】") && strings.Contains(s, "上次谈话内容A") {
+			foundMemory = true
+		}
+	}
+	if !foundMemory {
+		t.Fatalf("第一轮 LLM 请求应含注入的会话历史: %+v", msgs1)
+	}
+
+	// 第二轮请求：含 echo 的 tool 结果（自跳轮同样先经记忆）。
+	msgs2, _ := reqs[1]["messages"].([]any)
 	found := false
-	for _, m := range msgs {
+	for _, m := range msgs2 {
 		mm, _ := m.(map[string]any)
 		if mm["role"] == "tool" {
 			if s, _ := mm["content"].(string); strings.Contains(s, "e2e") {
@@ -290,6 +352,6 @@ func TestInferChainE2E(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("第二次 LLM 请求应包含 echo 的 tool 结果: %+v", msgs)
+		t.Fatalf("第二次 LLM 请求应包含 echo 的 tool 结果: %+v", msgs2)
 	}
 }

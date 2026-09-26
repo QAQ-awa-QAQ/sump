@@ -67,8 +67,32 @@ flowchart LR
     B["boss（发起者）"] -->|"user_message（boss=自己）"| L["LLM 服务 (Go)<br/>单步推理"]
     L <-->|"工具调用（短响应）"| T[工具服务]
     L <-->|审批| P[审批服务]
+    L <-->|"记忆往返（recall/resume）"| M[记忆服务]
     L -.->|"自我跳转：下一轮（带 boss）"| L
     L -->|"结束：deliver 直达"| B
+```
+
+### 记忆往返：完全启动
+
+LLM 服务不自己持有记忆——**每次调用 LLM API 之前，都要先把任务上下文托管给记忆服务**：
+
+- 收到任务（`user_message` / 自跳 `step`）时只做“半启动”：把上下文（含原 boss）以 `recall` 交给记忆服务，本轮结束（发出即完）；
+- 记忆服务查询会话历史、组装记忆——**注入什么记忆、上下文最终长什么样，全由记忆服务决定**（LLM 服务只负责把组装结果交给 LLM API）；
+- 记忆服务把组装后的上下文以 `resume` 发回；LLM 服务**只在收到来自记忆服务的消息（`from=memory`）时才“完全启动”——这是调用 LLM API 的唯一入口**（其他来源的 `resume` 一律拒绝）；
+- 信封 `boss`：记忆为 llm 工作（请求与回复的 boss 均为 llm）；原任务 boss 随上下文托管、原样带回，交付时仍直达原 boss。
+
+```mermaid
+sequenceDiagram
+    participant B as boss（发起者）
+    participant L as LLM 服务
+    participant M as 记忆服务
+    B->>L: user_message（boss=发起者）
+    Note over L: 半启动：托管上下文后本轮结束
+    L-->>M: recall（上下文 + 原 boss）
+    Note over M: 查历史 / 组装记忆
+    M->>L: resume（from=memory：注入记忆后的上下文）
+    Note over L: 完全启动：调 LLM API
+    L-->>B: （工具 / 自跳：下一轮同样先经记忆；结束 deliver 直达）
 ```
 
 ### 通信与性能约定
@@ -188,7 +212,13 @@ flowchart LR
 - `user_message`（链入口）：payload `{text}`；**发起者必须设 `boss`**；受理后立即回执，最终结果稍后经 `deliver` 送达
 - `step`（自跳继续）：payload `{messages}`——完整消息历史随消息携带；**发出即完**（不等待）
 - `deliver`（约定动作，**由 boss 实现**）：payload `{text}`；链终点判定结束直送 boss（交付方同步等回执）
-- **工具命名**：`<service>__<action>`——由 roster 的 `provides` 自动生成；`user_message` / `step` / `deliver` 属结构性动作，不暴露为工具
+- **工具命名**：`<service>__<action>`——由 roster 的 `provides` 自动生成；`user_message` / `step` / `deliver` / `recall` / `resume` / `store` 属链机制动作，不暴露为工具
+
+#### 记忆动作（memory）
+
+- `recall`（任务上下文托管）：payload `{context: {conversation_id, messages, boss}}`；受理后异步以 `resume` 回发
+- `resume`（完全启动，memory → llm）：payload 同构 `{context}`；`messages` 为注入记忆后的上下文——llm 仅接受 `from=memory` 的这一跳来调用 LLM API
+- `store`（对话落库）：payload `{conversation_id, role, content}`；幂等（与上一条完全相同则跳过）
 
 **后续批次（占名）**
 
@@ -204,7 +234,7 @@ flowchart LR
 | **agentloop** | Go | LLM 单步推理与跳转决策（循环 = 自我跳转链） | `agent.py`、`core/`（planner/executor）、`core/models/`、`evaluation/` | **第一批** |
 | **settings-center**（设置中心） | Go | 服务注册 · 全局信息 · 设置 · 调度/工作流 | `settings.py`、`config.py` | **第一批** |
 | sessions（会话） | Go | 会话历史与上下文持久化 | `api/session_manager.py`、`core/context.py` | 与接入服务的边界待定 |
-| memory（记忆） | Go | 四层记忆、检索、睡眠巩固、遗忘/冲突 | `memory/`（除 embedder）、记忆巩固工具、`core/sleep.py` | |
+| memory（记忆） | Go | 会话历史 + 上下文组装（recall/resume/store，完全启动链）；四层记忆/检索/巩固后续批次 | `memory/`（除 embedder）、记忆巩固工具、`core/sleep.py` | **已实现**（第二批） |
 | embedding（推理） | Python | 文本 → 向量（ONNX Runtime） | `memory/embedder.py` | 从 memory 拆出的独立小服务 |
 | security（安全审批） | Go | 规则 + LLM 分析 + 裁决；挂起/超时 | `security/` | |
 | tools（工具） | Go | 工具注册与执行（Shell 等） | `tools/registry.py`、`tools/builtin/` | 是否按类再拆待定 |
@@ -236,7 +266,8 @@ flowchart LR
 ## 4. 数据与存储
 
 - 各服务**独立建数据库**，数据归属到服务自身；服务之间不共享库表。
-- （细化待定：每个服务存什么、跨服务数据如何流转）
+- memory：SQLite（`data/memory.db`）——`messages` 会话消息表 + `memories` 长期记忆表（占位，后续批次）。
+- （细化待定：其余服务存什么、跨服务数据如何流转）
 
 ## 5. 从 1 的取舍清单
 
@@ -249,8 +280,10 @@ flowchart LR
 ## 6. 实施路线
 
 - **第一批**：agentloop + 设置中心（纯后端，不带前端）
+- **第二批**：memory（记忆服务）——recall / resume / store 与完全启动链
 
 ## 7. 待决问题
 
 - 跳转的超时与失败、连接保活的自适应阈值与公式（“具体再看”）。
-- 服务清单收尾：sessions 边界、tools 是否再拆。
+- 记忆缺席/失败：当前为“硬门”（链停在原地、日志可见，无重试）；重试 / 降级策略待细化。
+- 服务清单收尾：tools 是否再拆（sessions 已并入 memory）。

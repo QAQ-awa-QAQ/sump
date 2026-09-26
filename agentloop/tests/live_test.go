@@ -37,6 +37,7 @@ func TestLiveDeepSeek(t *testing.T) {
 
 	sc := startStubCenter(t)
 	boss := startStubBoss(t, sc)
+	mem := startStubMemory(t, sc)
 
 	logger := log.New(os.Stdout, "[live] ", log.LstdFlags)
 	l := loop.New(loop.Config{
@@ -44,6 +45,7 @@ func TestLiveDeepSeek(t *testing.T) {
 		Listen:            "127.0.0.1:0",
 		Center:            sc.URL(),
 		HeartbeatInterval: 5 * time.Second,
+		Memory:            "memory",
 		LLM:               llm.NewDeepSeekClient("https://api.deepseek.com", key, model),
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -52,6 +54,7 @@ func TestLiveDeepSeek(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(l.Shutdown)
+	mem.setAgentURL(l.WsURL())
 
 	c := dialAgent(t, l)
 	raw, err := protocol.EncodePayload(map[string]any{

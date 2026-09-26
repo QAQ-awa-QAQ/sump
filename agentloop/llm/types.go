@@ -1,27 +1,18 @@
 package llm
 
 // OpenAI 兼容的对话与工具调用类型（DeepSeek API 同构）。
+// 消息/工具调用的基础结构定义在 protocol 包（记忆服务也要托管同一结构），这里做别名。
 
-// Message 是一条对话消息。
-type Message struct {
-	Role       string     `json:"role" msgpack:"role"`                                     // system / user / assistant / tool
-	Content    string     `json:"content,omitempty" msgpack:"content,omitempty"`           // 文本内容
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty" msgpack:"tool_calls,omitempty"`     // assistant 发起的工具调用
-	ToolCallID string     `json:"tool_call_id,omitempty" msgpack:"tool_call_id,omitempty"` // tool 结果对应哪次调用
-}
+import "github.com/QAQ-awa-QAQ/sump/protocol"
 
-// ToolCall 是 assistant 发起的一次工具调用。
-type ToolCall struct {
-	ID       string       `json:"id" msgpack:"id"`
-	Type     string       `json:"type" msgpack:"type"` // "function"
-	Function FunctionCall `json:"function" msgpack:"function"`
-}
-
-// FunctionCall 是工具调用的函数名与参数（arguments 为 JSON 字符串）。
-type FunctionCall struct {
-	Name      string `json:"name" msgpack:"name"`
-	Arguments string `json:"arguments" msgpack:"arguments"`
-}
+type (
+	// Message 是一条对话消息（= protocol.Message）。
+	Message = protocol.Message
+	// ToolCall 是 assistant 发起的一次工具调用（= protocol.ToolCall）。
+	ToolCall = protocol.ToolCall
+	// FunctionCall 是工具调用的函数名与参数（= protocol.FunctionCall）。
+	FunctionCall = protocol.FunctionCall
+)
 
 // Tool 是可提供给模型的工具定义。
 type Tool struct {

@@ -29,6 +29,7 @@ type Config struct {
 	Listen            string        // 监听地址 host:port
 	Center            string        // 设置中心 WS 地址
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
+	Memory            string        // 记忆服务名（默认 memory——“完全启动”链的另一半）
 	LLM               llm.Client    // 单步推理的 LLM 客户端（user_message / step 必需；nil 时相关动作报错）
 }
 
@@ -56,6 +57,9 @@ func New(cfg Config, logger *log.Logger) *Loop {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = 15 * time.Second
 	}
+	if cfg.Memory == "" {
+		cfg.Memory = "memory"
+	}
 	l := &Loop{
 		cfg:     cfg,
 		logger:  logger,
@@ -66,6 +70,7 @@ func New(cfg Config, logger *log.Logger) *Loop {
 	l.actions["debug_jump"] = l.actionDebugJump
 	l.actions["user_message"] = l.actionUserMessage
 	l.actions["step"] = l.actionStep
+	l.actions["resume"] = l.actionResume
 	return l
 }
 
@@ -129,7 +134,7 @@ func (l *Loop) register(ctx context.Context) error {
 	env, err := protocol.NewEnvelope(protocol.TypeRegister, l.cfg.Name, "settings-center", "", protocol.RegisterPayload{
 		Name:        l.cfg.Name,
 		Addr:        l.selfURL,
-		Description: "LLM 单步推理与跳转决策（M1 骨架）",
+		Description: "LLM 单步推理：任务先经记忆服务托管，收到来自记忆的 resume 才完全启动（调 LLM API）",
 		Provides: []protocol.Provide{
 			{Action: "user_message", Input: "用户消息文本 {text}", Output: "受理回执（最终结果由 deliver 另行送达）"},
 			{Action: "echo", Input: "任意", Output: "原样返回（测试用）"},

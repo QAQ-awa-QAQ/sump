@@ -1,8 +1,8 @@
 package loop
 
 // 单步推理：roster → LLM 工具、工具调用执行、自跳（step）与交付（deliver）。
-// 循环不驻留本服务：每步“收到 → 处理 → 发出下一跳 → 结束”，
-// 结果由链终点直接交付 boss（见 DESIGN.md §3 智能体循环）。
+// 完全启动链：任务与自跳都先经记忆服务（recall 托管上下文）；只有“from=memory 的 resume”
+// 才触发对 LLM API 的调用。循环不驻留本服务：每步“收到 → 处理 → 发出下一跳 → 结束”。
 
 import (
 	"context"
@@ -26,11 +26,14 @@ const systemPrompt = `你是 SUMP 服务网络中的“单步推理器”（agen
 2. 当任务可以收尾、或用户问候闲聊时，直接输出最终答复文本。
 工具由系统代你执行，结果会以 tool 消息追加到对话中再交给你继续。`
 
-// structuralActions 是协议结构性动作：不作为工具暴露给 LLM。
+// structuralActions 是协议/链机制动作：不作为工具暴露给 LLM。
 var structuralActions = map[string]bool{
 	"user_message": true,
 	"step":         true,
 	"deliver":      true,
+	"recall":       true, // memory 服务：记忆请求
+	"store":        true, // memory 服务：对话落库
+	"resume":       true, // 本服务的“完全启动”入口（仅接受 from=memory）
 }
 
 // rosterTools 把名册里各服务的 provides 映射为 LLM 工具。
@@ -142,19 +145,45 @@ func (l *Loop) runToolCalls(ctx context.Context, env protocol.Envelope, calls []
 	return results
 }
 
-// stepPayload 是自跳（step）的 payload：完整消息历史随消息携带。
+// stepPayload 是自跳（step）的 payload：完整消息历史随消息携带，会话标识随行。
 type stepPayload struct {
-	Messages []llm.Message `msgpack:"messages"`
+	Messages       []llm.Message `msgpack:"messages"`
+	ConversationID string        `msgpack:"conversation_id,omitempty"`
 }
 
-// fireStep 自跳：向后继推理发 step——发出即完，后台尽力送达（M2 无重试，失败记日志）。
-func (l *Loop) fireStep(env protocol.Envelope, messages []llm.Message) {
-	raw, err := protocol.EncodePayload(stepPayload{Messages: messages})
+// fireStep 自跳：向后继推理发 step——发出即完，后台尽力送达（失败记日志）。
+func (l *Loop) fireStep(env protocol.Envelope, conversationID string, messages []llm.Message) {
+	raw, err := protocol.EncodePayload(stepPayload{Messages: messages, ConversationID: conversationID})
 	if err != nil {
 		l.logger.Printf("step 编码失败: %v", err)
 		return
 	}
 	l.fireJump(l.cfg.Name, l.selfURL, "step", raw, env.Trace, env.Boss)
+}
+
+// fireToService 向名册中的服务发起一跳（发出即完；失败记日志）。
+func (l *Loop) fireToService(service, action string, payload any, trace, boss string) {
+	name, addr, err := l.resolve(service)
+	if err != nil {
+		l.logger.Printf("fireToService %s(%s) 失败: %v", service, action, err)
+		return
+	}
+	raw, err := protocol.EncodePayload(payload)
+	if err != nil {
+		l.logger.Printf("fireToService %s(%s) 编码失败: %v", service, action, err)
+		return
+	}
+	l.fireJump(name, addr, action, raw, trace, boss)
+}
+
+// startMemoryRound 开启一轮“记忆往返”：把任务上下文（含原 boss）托管给记忆服务。
+// 记忆服务的 resume（from=memory）回来时才真正调用 LLM API（完全启动）。
+func (l *Loop) startMemoryRound(env protocol.Envelope, conversationID string, messages []llm.Message) {
+	l.fireToService(l.cfg.Memory, "recall", protocol.RecallPayload{Context: protocol.TaskContext{
+		ConversationID: conversationID,
+		Messages:       messages,
+		Boss:           env.Boss,
+	}}, env.Trace, l.cfg.Name)
 }
 
 // fireJump 后台发起一跳（不等最终结果；完成与否仅记日志）。
@@ -200,7 +229,8 @@ func (l *Loop) deliverToBoss(ctx context.Context, env protocol.Envelope, text st
 }
 
 // inferStep 是单步推理核心：一次 LLM 调用 → 决策（继续 / 收尾）。
-func (l *Loop) inferStep(ctx context.Context, env protocol.Envelope, messages []llm.Message) (any, error) {
+// 只被完全启动链触发（actionResume → inferStep）。
+func (l *Loop) inferStep(ctx context.Context, env protocol.Envelope, conversationID string, messages []llm.Message) (any, error) {
 	if l.cfg.LLM == nil {
 		return nil, errors.New("LLM 未配置（-llm-key 或环境变量 DEEPSEEK_API_KEY）")
 	}
@@ -211,17 +241,21 @@ func (l *Loop) inferStep(ctx context.Context, env protocol.Envelope, messages []
 
 	switch {
 	case len(resp.ToolCalls) > 0:
-		// 并行执行工具（短响应），再自跳继续推理——发出即完。
+		// 并行执行工具（短响应），再自跳继续推理（下一轮先经记忆）——发出即完。
 		results := l.runToolCalls(ctx, env, resp.ToolCalls)
 		messages = append(messages, llm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls})
 		messages = append(messages, results...)
-		l.fireStep(env, messages)
+		l.fireStep(env, conversationID, messages)
 		return map[string]any{"status": "accepted"}, nil
 	case strings.TrimSpace(resp.Content) != "":
 		// 判定结束：直接交付 boss（不沿链回传）。
 		if err := l.deliverToBoss(ctx, env, resp.Content); err != nil {
 			return nil, err
 		}
+		// 交付成功：把最终答复记入记忆（尽力送达）。
+		l.fireToService(l.cfg.Memory, "store", protocol.StorePayload{
+			ConversationID: conversationID, Role: "assistant", Content: resp.Content,
+		}, env.Trace, l.cfg.Name)
 		return map[string]any{"status": "done"}, nil
 	default:
 		return nil, errors.New("LLM 返回为空（既无 tool_calls 也无内容）")
@@ -229,9 +263,11 @@ func (l *Loop) inferStep(ctx context.Context, env protocol.Envelope, messages []
 }
 
 // actionUserMessage 是链的入口：boss 发来用户消息。
-func (l *Loop) actionUserMessage(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+// 半启动：把任务上下文托管给记忆服务（recall）——收到来自记忆的 resume 才完全启动。
+func (l *Loop) actionUserMessage(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p struct {
-		Text string `msgpack:"text"`
+		Text           string `msgpack:"text"`
+		ConversationID string `msgpack:"conversation_id,omitempty"`
 	}
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
@@ -239,15 +275,26 @@ func (l *Loop) actionUserMessage(ctx context.Context, env protocol.Envelope, in 
 	if strings.TrimSpace(p.Text) == "" {
 		return nil, errors.New("user_message: text 必填")
 	}
+	cid := p.ConversationID
+	if cid == "" {
+		cid = "default"
+	}
+
+	// 记一条用户消息（尽力送达；幂等与去重在记忆服务侧处理）。
+	l.fireToService(l.cfg.Memory, "store", protocol.StorePayload{
+		ConversationID: cid, Role: "user", Content: p.Text,
+	}, env.Trace, l.cfg.Name)
+
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: p.Text},
 	}
-	return l.inferStep(ctx, env, messages)
+	l.startMemoryRound(env, cid, messages)
+	return map[string]any{"status": "accepted"}, nil
 }
 
-// actionStep 承接前一跳：继续推理（消息历史随消息携带，完整显式）。
-func (l *Loop) actionStep(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+// actionStep 承接前一跳：继续推理前同样先经记忆（半启动）。
+func (l *Loop) actionStep(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p stepPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
@@ -255,5 +302,36 @@ func (l *Loop) actionStep(ctx context.Context, env protocol.Envelope, in protoco
 	if len(p.Messages) == 0 {
 		return nil, errors.New("step: messages 为空")
 	}
-	return l.inferStep(ctx, env, p.Messages)
+	cid := p.ConversationID
+	if cid == "" {
+		cid = "default"
+	}
+	l.startMemoryRound(env, cid, p.Messages)
+	return map[string]any{"status": "accepted"}, nil
+}
+
+// actionResume 是完全启动的唯一入口：仅接受来自记忆服务的 resume。
+// 记忆组装好的上下文到达后，才调用 LLM API（见 DESIGN.md §3 记忆往返）。
+func (l *Loop) actionResume(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	if env.From != l.cfg.Memory {
+		return nil, fmt.Errorf("resume 仅接受来自记忆服务（%s）的调用，拒绝来源 %q", l.cfg.Memory, env.From)
+	}
+	var p protocol.ResumePayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	tc := p.Context
+	if len(tc.Messages) == 0 {
+		return nil, errors.New("resume: 上下文为空")
+	}
+	// 该跳信封 boss 是 llm 自身（记忆为 llm 工作）；任务原 boss 随上下文恢复。
+	taskEnv := env
+	if tc.Boss != "" {
+		taskEnv.Boss = tc.Boss
+	}
+	cid := tc.ConversationID
+	if cid == "" {
+		cid = "default"
+	}
+	return l.inferStep(ctx, taskEnv, cid, tc.Messages)
 }

@@ -1,6 +1,7 @@
 package tests
 
-// M2.3 全链测试：user_message → 工具跳转（短响应）→ 自跳(step) → 交付(deliver) 直达 boss。
+// M3 全链测试（完全启动）：user_message → 记忆往返（recall → resume）→ 工具跳转（短响应）
+// → 自跳(step) → 再来一轮记忆往返 → 交付(deliver) 直达 boss。
 
 import (
 	"context"
@@ -95,6 +96,7 @@ func (b *stubBoss) handleWS(w http.ResponseWriter, r *http.Request) {
 func TestInferChain(t *testing.T) {
 	sc := startStubCenter(t)
 	boss := startStubBoss(t, sc)
+	mem := startStubMemory(t, sc)
 
 	fake := &llm.Fake{Replies: []llm.Message{
 		{Role: "assistant", ToolCalls: []llm.ToolCall{{
@@ -110,6 +112,7 @@ func TestInferChain(t *testing.T) {
 		Listen:            "127.0.0.1:0",
 		Center:            sc.URL(),
 		HeartbeatInterval: 100 * time.Millisecond,
+		Memory:            "memory",
 		LLM:               fake,
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -118,6 +121,7 @@ func TestInferChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(l.Shutdown)
+	mem.setAgentURL(l.WsURL())
 
 	c := dialAgent(t, l)
 
@@ -167,6 +171,10 @@ func TestInferChain(t *testing.T) {
 	if !foundEchoTool {
 		t.Fatalf("第一轮请求应包含 agentloop__echo 工具: %+v", first.Tools)
 	}
+	// 完全启动链：请求必须携带记忆块（由 resume 注入）。
+	if !hasMemoryBlock(first.Messages) {
+		t.Fatalf("第一轮请求应含记忆块: %+v", first.Messages)
+	}
 	second := fake.Requests[1]
 	hasToolResult := false
 	for _, m := range second.Messages {
@@ -179,5 +187,67 @@ func TestInferChain(t *testing.T) {
 	}
 	if !hasToolResult {
 		t.Fatalf("第二轮请求应包含 echo 的 tool 结果: %+v", second.Messages)
+	}
+	if !hasMemoryBlock(second.Messages) {
+		t.Fatalf("第二轮请求应含记忆块: %+v", second.Messages)
+	}
+
+	// 记忆写入：用户消息（链入口）与最终答复（交付后）各记一条。
+	stores := waitStores(t, mem, 2, 5*time.Second)
+	var gotUser, gotAssistant bool
+	for _, s := range stores {
+		if s.Role == "user" && s.Content == "你好" {
+			gotUser = true
+		}
+		if s.Role == "assistant" && s.Content == "最终答复：你好！" {
+			gotAssistant = true
+		}
+	}
+	if !gotUser || !gotAssistant {
+		t.Fatalf("store 内容不符: %+v", stores)
+	}
+}
+
+// hasMemoryBlock 判断消息链里是否有记忆块。
+func hasMemoryBlock(messages []llm.Message) bool {
+	for _, m := range messages {
+		if m.Role == "system" && strings.HasPrefix(m.Content, "【记忆】") {
+			return true
+		}
+	}
+	return false
+}
+
+// waitStores 等待记忆替身收到至少 n 条 store。
+func waitStores(t *testing.T, m *stubMemory, n int, timeout time.Duration) []protocol.StorePayload {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s := m.Stores(); len(s) >= n {
+			return s
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("等待 %d 条 store 超时（实际 %d）", n, len(m.Stores()))
+	return nil
+}
+
+// TestResumeRejected 验证“完全启动”入口只接受 from=memory——其他来源一律拒绝。
+func TestResumeRejected(t *testing.T) {
+	sc := startStubCenter(t)
+	l := startAgent(t, sc.URL())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := dialAgent(t, l)
+
+	rp := jump(t, c, "resume", protocol.ResumePayload{Context: protocol.TaskContext{
+		Messages: []llm.Message{{Role: "user", Content: "x"}},
+	}}, ctx)
+	if rp.OK {
+		t.Fatal("resume 应拒绝非记忆来源的调用")
+	}
+	if !strings.Contains(rp.Error, "仅接受来自记忆服务") {
+		t.Fatalf("错误信息不符: %s", rp.Error)
 	}
 }

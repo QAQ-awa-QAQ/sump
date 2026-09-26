@@ -65,3 +65,31 @@ type JumpPayload struct {
 type HeartbeatPayload struct {
 	Status string `msgpack:"status,omitempty"`
 }
+
+// ---------- 记忆往返（完全启动链） ----------
+
+// TaskContext 是 LLM 服务的任务上下文：随“记忆往返”托管给记忆服务。
+// Messages 是推理中的完整消息链；Boss 是原任务发起者（不可丢失，由记忆服务原样带回）。
+type TaskContext struct {
+	ConversationID string    `msgpack:"conversation_id,omitempty"`
+	Messages       []Message `msgpack:"messages"`
+	Boss           string    `msgpack:"boss,omitempty"`
+}
+
+// RecallPayload 是 recall（向记忆请求记忆）的 payload：把任务上下文交给记忆服务。
+type RecallPayload struct {
+	Context TaskContext `msgpack:"context"`
+}
+
+// ResumePayload 是 resume 的 payload：记忆服务组装好上下文后发回，
+// 调用方收到来自记忆的消息时才“完全启动”（调用 LLM API）。
+type ResumePayload struct {
+	Context TaskContext `msgpack:"context"`
+}
+
+// StorePayload 是 store 的 payload：向记忆服务记一条对话消息。
+type StorePayload struct {
+	ConversationID string `msgpack:"conversation_id"`
+	Role           string `msgpack:"role"`
+	Content        string `msgpack:"content"`
+}
