@@ -4,6 +4,8 @@ use (
 	./protocol
 	./agentloop
 	./memory
+	./images
+	./qq
 	./settings-center
 	./tests
 )

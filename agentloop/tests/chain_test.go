@@ -22,7 +22,7 @@ import (
 type stubBoss struct {
 	ln        net.Listener
 	srv       *http.Server
-	delivered chan string
+	delivered chan protocol.DeliverPayload
 }
 
 func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
@@ -31,7 +31,7 @@ func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &stubBoss{ln: ln, delivered: make(chan string, 4)}
+	b := &stubBoss{ln: ln, delivered: make(chan protocol.DeliverPayload, 4)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", b.handleWS)
 	b.srv = &http.Server{Handler: mux}
@@ -76,12 +76,10 @@ func (b *stubBoss) handleWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if jp.Action == "deliver" {
-			var p struct {
-				Text string `msgpack:"text"`
-			}
+			var p protocol.DeliverPayload
 			_ = protocol.DecodeRaw(jp.Input, &p)
 			select {
-			case b.delivered <- p.Text:
+			case b.delivered <- p:
 			default:
 			}
 			resp, _ := protocol.NewResponse(env, "stub-boss", protocol.ResponsePayload{OK: true})
@@ -149,9 +147,12 @@ func TestInferChain(t *testing.T) {
 
 	// 等待 boss 收到 deliver（链在后台推进）。
 	select {
-	case text := <-boss.delivered:
-		if text != "最终答复：你好！" {
-			t.Fatalf("交付内容不符: %q", text)
+	case d := <-boss.delivered:
+		if d.Text != "最终答复：你好！" {
+			t.Fatalf("交付内容不符: %q", d.Text)
+		}
+		if d.ConversationID != "default" {
+			t.Fatalf("交付应带回会话标识: %q", d.ConversationID)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("超时：boss 未收到 deliver")

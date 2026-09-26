@@ -107,3 +107,62 @@ func TestFakeSequence(t *testing.T) {
 		t.Fatalf("CallCount = %d", f.CallCount())
 	}
 }
+
+// TestRequestBodyMultimodal 验证图片引用 → 多模态内容的序列化与占位降级。
+func TestRequestBodyMultimodal(t *testing.T) {
+	req := ChatRequest{
+		Model: "m",
+		Messages: []Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "看看这个", ImageIDs: []string{"img-1", "img-old"}},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Type: "function", Function: FunctionCall{Name: "x__y", Arguments: "{}"}}}},
+			{Role: "tool", Content: "结果", ToolCallID: "c1"},
+			{Role: "user", Content: "以前的图", ImageIDs: []string{"img-gone"}},
+		},
+		Images: map[string]string{"img-1": "data:image/png;base64,AAAA"},
+	}
+	body, err := buildRequestBody(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages) != 5 {
+		t.Fatalf("消息数不符: %d", len(got.Messages))
+	}
+
+	// 有数据的引用 → content 数组 = [text, image_url]（无数据的 img-old 被忽略）。
+	parts, ok := got.Messages[1]["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("多模态 content 不符: %#v", got.Messages[1]["content"])
+	}
+	if p0 := parts[0].(map[string]any); p0["type"] != "text" || p0["text"] != "看看这个" {
+		t.Fatalf("text 块不符: %#v", parts[0])
+	}
+	p1 := parts[1].(map[string]any)
+	if p1["type"] != "image_url" || p1["image_url"].(map[string]any)["url"] != "data:image/png;base64,AAAA" {
+		t.Fatalf("image_url 块不符: %#v", parts[1])
+	}
+
+	// tool_calls / tool_call_id 保留。
+	if _, ok := got.Messages[2]["tool_calls"]; !ok {
+		t.Fatalf("tool_calls 丢失: %#v", got.Messages[2])
+	}
+	if tm := got.Messages[3]; tm["tool_call_id"] != "c1" || tm["content"] != "结果" {
+		t.Fatalf("tool 消息不符: %#v", tm)
+	}
+
+	// 无内联数据的引用 → 文本占位。
+	if c, ok := got.Messages[4]["content"].(string); !ok || !strings.Contains(c, "[图片]") {
+		t.Fatalf("更早的图片应转文本占位: %#v", got.Messages[4]["content"])
+	}
+	// 纯图无文本：占位兜底。
+	pure := marshalMessage(Message{Role: "user", ImageIDs: []string{"x"}}, nil)
+	if pure["content"] != "[图片]" {
+		t.Fatalf("纯图占位不符: %#v", pure["content"])
+	}
+}

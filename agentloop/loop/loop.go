@@ -30,6 +30,7 @@ type Config struct {
 	Center            string        // 设置中心 WS 地址
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
 	Memory            string        // 记忆服务名（默认 memory——“完全启动”链的另一半）
+	Images            string        // 图片服务名（默认 images——推理前取图内联）
 	LLM               llm.Client    // 单步推理的 LLM 客户端（user_message / step 必需；nil 时相关动作报错）
 }
 
@@ -59,6 +60,9 @@ func New(cfg Config, logger *log.Logger) *Loop {
 	}
 	if cfg.Memory == "" {
 		cfg.Memory = "memory"
+	}
+	if cfg.Images == "" {
+		cfg.Images = "images"
 	}
 	l := &Loop{
 		cfg:     cfg,

@@ -43,7 +43,7 @@ func (c *DeepSeekClient) Chat(ctx context.Context, req ChatRequest) (Message, er
 	if req.Model == "" {
 		req.Model = c.Model
 	}
-	body, err := json.Marshal(req)
+	body, err := buildRequestBody(req)
 	if err != nil {
 		return Message{}, fmt.Errorf("llm: 编码请求失败: %w", err)
 	}

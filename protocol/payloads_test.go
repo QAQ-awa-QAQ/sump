@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -11,7 +12,7 @@ func TestTaskContextRoundTrip(t *testing.T) {
 		Boss:           "qq",
 		Messages: []Message{
 			{Role: "system", Content: "sys"},
-			{Role: "user", Content: "你好"},
+			{Role: "user", Content: "你好", ImageIDs: []string{"img-1", "img-2"}},
 			{Role: "assistant", ToolCalls: []ToolCall{{
 				ID: "c1", Type: "function",
 				Function: FunctionCall{Name: "svc__act", Arguments: `{"a":1}`},
@@ -48,6 +49,9 @@ func TestTaskContextRoundTrip(t *testing.T) {
 	if out.Context.Messages[3].ToolCallID != "c1" {
 		t.Fatalf("tool_call_id 丢失: %+v", out.Context.Messages[3])
 	}
+	if len(out.Context.Messages[1].ImageIDs) != 2 || out.Context.Messages[1].ImageIDs[0] != "img-1" {
+		t.Fatalf("ImageIDs 丢失: %+v", out.Context.Messages[1])
+	}
 
 	// Resume 与 Store 同构走一遍。
 	rp := ResumePayload{Context: out.Context}
@@ -56,5 +60,40 @@ func TestTaskContextRoundTrip(t *testing.T) {
 	}
 	if _, err := NewEnvelope(TypeJump, "agentloop", "memory", "trace-1", StorePayload{ConversationID: "conv-1", Role: "user", Content: "你好"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestAuxPayloadsRoundTrip 验证交付与图片相关 payload 的编解码保真。
+func TestAuxPayloadsRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		out  any
+	}{
+		{"deliver", DeliverPayload{Text: "hi", ConversationID: "qq:private:10001"}, &DeliverPayload{}},
+		{"save", ImageSavePayload{URL: "http://x/i.png", Mime: "image/png"}, &ImageSavePayload{}},
+		{"saveResult", ImageSaveResult{ID: "01J", Mime: "image/png", Size: 123}, &ImageSaveResult{}},
+		{"fetch", ImageFetchPayload{ID: "01J"}, &ImageFetchPayload{}},
+		{"fetchResult", ImageFetchResult{ID: "01J", Mime: "image/jpeg", Data: "AA==", Size: 1}, &ImageFetchResult{}},
+	}
+	for _, tc := range cases {
+		env, err := NewEnvelope(TypeJump, "a", "b", "trace-1", tc.in)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		data, err := Marshal(env)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		got, err := Unmarshal(data)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if err := got.DecodePayload(tc.out); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !reflect.DeepEqual(tc.in, reflect.ValueOf(tc.out).Elem().Interface()) {
+			t.Fatalf("%s 不符: %+v != %+v", tc.name, tc.in, tc.out)
+		}
 	}
 }

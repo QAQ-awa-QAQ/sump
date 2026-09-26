@@ -81,9 +81,9 @@ func TestLiveDeepSeek(t *testing.T) {
 	}
 
 	select {
-	case text := <-boss.delivered:
-		t.Logf("boss 收到交付: %q", text)
-		if text == "" {
+	case d := <-boss.delivered:
+		t.Logf("boss 收到交付: %q", d.Text)
+		if d.Text == "" {
 			t.Fatal("交付文本为空")
 		}
 	case <-time.After(120 * time.Second):

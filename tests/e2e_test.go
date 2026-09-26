@@ -104,7 +104,13 @@ func TestHelloWeb(t *testing.T) {
 // buildService 构建服务二进制到临时目录（在仓库根执行，走 go.work）。
 func buildService(t *testing.T, pkg string) string {
 	t.Helper()
-	name := filepath.Base(pkg)
+	return buildServiceNamed(t, pkg, filepath.Base(pkg))
+}
+
+// buildServiceNamed 同上，但可指定输出名。
+// 用于规避杀软对个别文件名的误报（本机 McAfee 拦截 "images.exe" 这个名字）。
+func buildServiceNamed(t *testing.T, pkg, name string) string {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}

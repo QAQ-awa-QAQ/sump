@@ -34,6 +34,8 @@ var structuralActions = map[string]bool{
 	"recall":       true, // memory 服务：记忆请求
 	"store":        true, // memory 服务：对话落库
 	"resume":       true, // 本服务的“完全启动”入口（仅接受 from=memory）
+	"save":         true, // images 服务：保存图片（qq 侧调用）
+	"fetch":        true, // images 服务：取图（llm 侧按需调用）
 }
 
 // rosterTools 把名册里各服务的 provides 映射为 LLM 工具。
@@ -145,6 +147,57 @@ func (l *Loop) runToolCalls(ctx context.Context, env protocol.Envelope, calls []
 	return results
 }
 
+// resolveImages 取“最近一条带图消息”的图片数据（id → data URL），供 LLM 内联。
+// 更早的图片引用保持文本占位（由 llm 序列化层处理）；失败仅记日志，不阻断推理。
+func (l *Loop) resolveImages(ctx context.Context, trace string, messages []llm.Message) map[string]string {
+	var ids []string
+	for i := len(messages) - 1; i >= 0; i-- {
+		if len(messages[i].ImageIDs) > 0 {
+			ids = messages[i].ImageIDs
+			break
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	targetName, targetAddr, err := l.resolve(l.cfg.Images)
+	if err != nil {
+		l.logger.Printf("取图失败（服务 %s）: %v", l.cfg.Images, err)
+		return nil
+	}
+	out := make(map[string]string, len(ids))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		raw, err := protocol.EncodePayload(protocol.ImageFetchPayload{ID: id})
+		if err != nil {
+			continue
+		}
+		wg.Add(1)
+		go func(id string, raw msgpack.RawMessage) {
+			defer wg.Done()
+			data, err := l.callService(ctx, targetName, targetAddr, "fetch", raw, trace)
+			if err != nil {
+				l.logger.Printf("取图 %s 失败: %v", id, err)
+				return
+			}
+			var fr protocol.ImageFetchResult
+			if err := protocol.DecodeRaw(data, &fr); err != nil || fr.Data == "" {
+				l.logger.Printf("取图 %s 结果无效", id)
+				return
+			}
+			mu.Lock()
+			out[id] = "data:" + fr.Mime + ";base64," + fr.Data
+			mu.Unlock()
+		}(id, raw)
+	}
+	wg.Wait()
+	if len(out) > 0 {
+		l.logger.Printf("已取图 %d/%d 张（内联给模型）", len(out), len(ids))
+	}
+	return out
+}
+
 // stepPayload 是自跳（step）的 payload：完整消息历史随消息携带，会话标识随行。
 type stepPayload struct {
 	Messages       []llm.Message `msgpack:"messages"`
@@ -210,7 +263,8 @@ func (l *Loop) fireJump(targetName, targetAddr, action string, input msgpack.Raw
 }
 
 // deliverToBoss 把最终结果交付给 boss（同步等回执；失败返回错误）。
-func (l *Loop) deliverToBoss(ctx context.Context, env protocol.Envelope, text string) error {
+// 附带会话标识：boss 用它把结果路由回原会话（如 QQ 私聊）。
+func (l *Loop) deliverToBoss(ctx context.Context, env protocol.Envelope, conversationID, text string) error {
 	if env.Boss == "" {
 		return errors.New("无 boss，结果无法交付")
 	}
@@ -218,7 +272,7 @@ func (l *Loop) deliverToBoss(ctx context.Context, env protocol.Envelope, text st
 	if err != nil {
 		return err
 	}
-	data, err := protocol.EncodePayload(map[string]any{"text": text})
+	data, err := protocol.EncodePayload(protocol.DeliverPayload{Text: text, ConversationID: conversationID})
 	if err != nil {
 		return err
 	}
@@ -234,7 +288,11 @@ func (l *Loop) inferStep(ctx context.Context, env protocol.Envelope, conversatio
 	if l.cfg.LLM == nil {
 		return nil, errors.New("LLM 未配置（-llm-key 或环境变量 DEEPSEEK_API_KEY）")
 	}
-	resp, err := l.cfg.LLM.Chat(ctx, llm.ChatRequest{Messages: messages, Tools: l.rosterTools()})
+	resp, err := l.cfg.LLM.Chat(ctx, llm.ChatRequest{
+		Messages: messages,
+		Tools:    l.rosterTools(),
+		Images:   l.resolveImages(ctx, env.Trace, messages),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("LLM 调用失败: %w", err)
 	}
@@ -249,7 +307,7 @@ func (l *Loop) inferStep(ctx context.Context, env protocol.Envelope, conversatio
 		return map[string]any{"status": "accepted"}, nil
 	case strings.TrimSpace(resp.Content) != "":
 		// 判定结束：直接交付 boss（不沿链回传）。
-		if err := l.deliverToBoss(ctx, env, resp.Content); err != nil {
+		if err := l.deliverToBoss(ctx, env, conversationID, resp.Content); err != nil {
 			return nil, err
 		}
 		// 交付成功：把最终答复记入记忆（尽力送达）。
@@ -266,14 +324,15 @@ func (l *Loop) inferStep(ctx context.Context, env protocol.Envelope, conversatio
 // 半启动：把任务上下文托管给记忆服务（recall）——收到来自记忆的 resume 才完全启动。
 func (l *Loop) actionUserMessage(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p struct {
-		Text           string `msgpack:"text"`
-		ConversationID string `msgpack:"conversation_id,omitempty"`
+		Text           string   `msgpack:"text"`
+		ConversationID string   `msgpack:"conversation_id,omitempty"`
+		Images         []string `msgpack:"images,omitempty"` // 图片引用（images 服务中的 id）
 	}
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(p.Text) == "" {
-		return nil, errors.New("user_message: text 必填")
+	if strings.TrimSpace(p.Text) == "" && len(p.Images) == 0 {
+		return nil, errors.New("user_message: text 与 images 至少必填其一")
 	}
 	cid := p.ConversationID
 	if cid == "" {
@@ -287,7 +346,7 @@ func (l *Loop) actionUserMessage(_ context.Context, env protocol.Envelope, in pr
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: p.Text},
+		{Role: "user", Content: p.Text, ImageIDs: p.Images},
 	}
 	l.startMemoryRound(env, cid, messages)
 	return map[string]any{"status": "accepted"}, nil

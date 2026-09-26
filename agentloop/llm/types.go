@@ -32,6 +32,9 @@ type ChatRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
 	Tools    []Tool    `json:"tools,omitempty"`
+	// Images 是待内联的图片数据（图片 id → data URL）。
+	// 携带数据的引用内联为多模态内容；无数据的引用转文本占位（不直接序列化进请求体）。
+	Images map[string]string `json:"-"`
 }
 
 // ChatResponse 是补全响应（OpenAI 兼容）。

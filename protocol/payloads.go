@@ -93,3 +93,38 @@ type StorePayload struct {
 	Role           string `msgpack:"role"`
 	Content        string `msgpack:"content"`
 }
+
+// ---------- 交付与图片 ----------
+
+// DeliverPayload 是 deliver（链终点 → boss）的 payload：最终文本 + 会话标识（boss 据此路由回复）。
+type DeliverPayload struct {
+	Text           string `msgpack:"text"`
+	ConversationID string `msgpack:"conversation_id,omitempty"`
+}
+
+// ImageSavePayload 是 images.save 的 payload：URL 与 base64 二选一。
+type ImageSavePayload struct {
+	URL  string `msgpack:"url,omitempty"`
+	Data string `msgpack:"data,omitempty"` // base64（不含 data: 前缀）
+	Mime string `msgpack:"mime,omitempty"` // 可选，缺省时探测
+}
+
+// ImageSaveResult 是 images.save 的结果。
+type ImageSaveResult struct {
+	ID   string `msgpack:"id"`
+	Mime string `msgpack:"mime"`
+	Size int64  `msgpack:"size"`
+}
+
+// ImageFetchPayload 是 images.fetch 的 payload。
+type ImageFetchPayload struct {
+	ID string `msgpack:"id"`
+}
+
+// ImageFetchResult 是 images.fetch 的结果（存入时二进制，取时转 base64）。
+type ImageFetchResult struct {
+	ID   string `msgpack:"id"`
+	Mime string `msgpack:"mime"`
+	Data string `msgpack:"data"` // base64（不含 data: 前缀）
+	Size int64  `msgpack:"size"`
+}

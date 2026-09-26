@@ -22,7 +22,8 @@ import (
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 )
 
-// fakeDeepSeek 是 OpenAI 兼容的假 LLM：第一次请求回 tool_call，之后回文本。
+// fakeDeepSeek 是 OpenAI 兼容的假 LLM：toolFirst=true 时第一次请求回 tool_call、之后回文本；
+// toolFirst=false 时始终回文本。
 type fakeDeepSeek struct {
 	mu       sync.Mutex
 	calls    int
@@ -30,7 +31,7 @@ type fakeDeepSeek struct {
 	srv      *httptest.Server
 }
 
-func startFakeDeepSeek(t *testing.T) *fakeDeepSeek {
+func startFakeDeepSeek(t *testing.T, toolFirst bool) *fakeDeepSeek {
 	t.Helper()
 	f := &fakeDeepSeek{}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +50,7 @@ func startFakeDeepSeek(t *testing.T) *fakeDeepSeek {
 		f.mu.Unlock()
 
 		var msg map[string]any
-		if call == 1 {
+		if toolFirst && call == 1 {
 			msg = map[string]any{
 				"role": "assistant",
 				"tool_calls": []any{map[string]any{
@@ -206,7 +207,7 @@ func TestInferChainE2E(t *testing.T) {
 	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/agentloop")
 	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
 
-	fakeLLM := startFakeDeepSeek(t)
+	fakeLLM := startFakeDeepSeek(t, true)
 	boss := startE2EBoss(t)
 
 	scPort := freePort(t)

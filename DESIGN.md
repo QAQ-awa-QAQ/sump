@@ -95,6 +95,13 @@ sequenceDiagram
     L-->>B: （工具 / 自跳：下一轮同样先经记忆；结束 deliver 直达）
 ```
 
+### 图片链路（qq → images → llm）
+
+- qq 收到图片消息：把图片 URL 交给 images 服务保存（`save` → `{id}`），`user_message` 携带图片 id（消息 `ImageIDs`）；
+- llm 在“完全启动”后、调 API 前：对**最近一条带图消息**的 id 逐个 `fetch`（images 返回 base64），组装为 OpenAI 多模态内容（`image_url`）内联；
+- 更早的图片引用不内联，序列化时转文本占位 `[图片]`（继承 v1 行为：仅最近一条内联）；
+- images 独立库（SQLite 元数据 + 文件目录），单图上限 32MiB（对齐 DeepSeek 图片限制）。
+
 ### 通信与性能约定
 
 - 服务间 WS **不做纯长连接**：默认短连接、空闲即断；访问频繁则连接保留时长上涨，冷下来回落——随实际访问频率自适应增减。
@@ -238,7 +245,8 @@ sequenceDiagram
 | embedding（推理） | Python | 文本 → 向量（ONNX Runtime） | `memory/embedder.py` | 从 memory 拆出的独立小服务 |
 | security（安全审批） | Go | 规则 + LLM 分析 + 裁决；挂起/超时 | `security/` | |
 | tools（工具） | Go | 工具注册与执行（Shell 等） | `tools/registry.py`、`tools/builtin/` | 是否按类再拆待定 |
-| qq（QQ 接入） | Go | NapCat 对接、群聊、图片、审批推送 | `plugins/builtin/napcat_plugin.py` | NapCat 容器已在 |
+| qq（QQ 接入） | Go | NapCat/OneBot 11 正向 WS；私聊（零信任）→ 任务链；deliver → 回发 | `plugins/builtin/napcat_plugin.py` | **已实现**（仅私聊；群聊/审批后续） |
+| images（图片） | Go | 图片保存（URL/base64）+ 按需转 base64 发回（llm 取图内联） | （v1 图片直通部分） | **已实现** |
 | web（Web 接入） | Go | 浏览器 REST/SSE 接入（不带前端） | `api/` | UI 归 frontend 服务 |
 | frontend（前端服务） | TS | 浏览器 UI，独立服务节点 | `frontend/` | **后续批次**；当前所有服务不带前端 |
 | assets（资产） | Go | 文件资产库、索引、检索 | `assets.py` | |
@@ -281,9 +289,12 @@ sequenceDiagram
 
 - **第一批**：agentloop + 设置中心（纯后端，不带前端）
 - **第二批**：memory（记忆服务）——recall / resume / store 与完全启动链
+- **第三批**：qq + images（第一个真实入口）——QQ 私聊 → 任务链 → 回发；图片存取链路
 
 ## 7. 待决问题
 
 - 跳转的超时与失败、连接保活的自适应阈值与公式（“具体再看”）。
 - 记忆缺席/失败：当前为“硬门”（链停在原地、日志可见，无重试）；重试 / 降级策略待细化。
+- qq 后续批次：群聊（@ 必回 / 自主插话 / 群聊记录）、审批推送与数字裁决、文件消息。
+- 图片：清理策略（保留期/容量）、去重；主动发送图片（表情包）能力。
 - 服务清单收尾：tools 是否再拆（sessions 已并入 memory）。
