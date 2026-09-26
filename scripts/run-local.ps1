@@ -1,0 +1,64 @@
+﻿# SUMP v2 本地开发：一键启动第一批服务（settings-center + agentloop）
+# 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-AgentAddr 127.0.0.1:9101]
+# 停止：Ctrl+C（脚本会清理两个子进程）
+param(
+    [string]$CenterAddr = '127.0.0.1:9000',
+    [string]$AgentAddr = '127.0.0.1:9101'
+)
+
+$ErrorActionPreference = 'Stop'
+
+$root   = Split-Path -Parent $PSScriptRoot
+$binDir = Join-Path $env:TEMP 'sump-v2-bin'
+New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+
+function Wait-Port([string]$Addr, [int]$TimeoutSec) {
+    $h, $p = $Addr.Split(':')
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $client = New-Object System.Net.Sockets.TcpClient
+        try {
+            $client.Connect($h, [int]$p)
+            $client.Close()
+            return $true
+        } catch {
+            Start-Sleep -Milliseconds 300
+        }
+    }
+    return $false
+}
+
+Write-Host '[1/3] 构建 settings-center / agentloop ...' -ForegroundColor Cyan
+Push-Location $root
+try {
+    go build -o (Join-Path $binDir 'settings-center.exe') 'github.com/QAQ-awa-QAQ/sump/settings-center'
+    if ($LASTEXITCODE -ne 0) { throw 'settings-center 构建失败' }
+    go build -o (Join-Path $binDir 'agentloop.exe') 'github.com/QAQ-awa-QAQ/sump/agentloop'
+    if ($LASTEXITCODE -ne 0) { throw 'agentloop 构建失败' }
+} finally {
+    Pop-Location
+}
+
+$center = $null
+$agent  = $null
+try {
+    Write-Host '[2/3] 启动 settings-center ...' -ForegroundColor Cyan
+    $center = Start-Process -FilePath (Join-Path $binDir 'settings-center.exe') -ArgumentList '-addr', $CenterAddr -PassThru -NoNewWindow
+    if (-not (Wait-Port $CenterAddr 60)) { throw 'settings-center 未在 60 秒内就绪' }
+
+    Write-Host '[3/3] 启动 agentloop ...' -ForegroundColor Cyan
+    $agent = Start-Process -FilePath (Join-Path $binDir 'agentloop.exe') -ArgumentList '-addr', $AgentAddr, '-center', "ws://$CenterAddr/ws" -PassThru -NoNewWindow
+
+    Write-Host ''
+    Write-Host "settings-center: ws://$CenterAddr/ws  (PID $($center.Id))"
+    Write-Host "agentloop:       ws://$AgentAddr/ws  (PID $($agent.Id))"
+    Write-Host '按 Ctrl+C 停止' -ForegroundColor Yellow
+
+    Wait-Process -Id $center.Id, $agent.Id
+} finally {
+    foreach ($proc in @($center, $agent)) {
+        if ($null -ne $proc -and -not $proc.HasExited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+}

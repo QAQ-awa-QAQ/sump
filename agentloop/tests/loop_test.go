@@ -1,0 +1,302 @@
+// Package tests 是 agentloop 的服务内集成测试：
+// 最小“设置中心”替身 + 真实 agentloop 实例，走真实 WS 通信。
+package tests
+
+import (
+	"context"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"sort"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+
+	"github.com/QAQ-awa-QAQ/sump/agentloop/loop"
+	"github.com/QAQ-awa-QAQ/sump/protocol"
+)
+
+// ---------- 设置中心的最小替身 ----------
+
+type stubConn struct {
+	ws *websocket.Conn
+	mu sync.Mutex
+}
+
+func (c *stubConn) send(env protocol.Envelope) {
+	data, err := protocol.Marshal(env)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_ = c.ws.WriteMessage(websocket.BinaryMessage, data)
+}
+
+type stubCenter struct {
+	ln     net.Listener
+	srv    *http.Server
+	logger *log.Logger
+
+	mu    sync.Mutex
+	cards map[string]protocol.ServiceCard
+	conns map[*stubConn]struct{}
+}
+
+var stubUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+func startStubCenter(t *testing.T) *stubCenter {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := &stubCenter{
+		ln:     ln,
+		logger: log.New(os.Stdout, "[stub-center] ", log.LstdFlags),
+		cards:  map[string]protocol.ServiceCard{},
+		conns:  map[*stubConn]struct{}{},
+	}
+	sc.cards["stub-center"] = protocol.ServiceCard{
+		Name:        "stub-center",
+		Addr:        sc.URL(),
+		Description: "设置中心测试替身",
+		Provides:    []protocol.Provide{{Action: "ping", Output: "pong"}},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", sc.handleWS)
+	sc.srv = &http.Server{Handler: mux}
+	go func() { _ = sc.srv.Serve(ln) }()
+	t.Cleanup(func() { _ = sc.srv.Close() })
+	return sc
+}
+
+func (sc *stubCenter) URL() string { return "ws://" + sc.ln.Addr().String() + "/ws" }
+
+func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
+	ws, err := stubUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	c := &stubConn{ws: ws}
+	for {
+		_, data, err := ws.ReadMessage()
+		if err != nil {
+			sc.mu.Lock()
+			delete(sc.conns, c)
+			sc.mu.Unlock()
+			_ = ws.Close()
+			return
+		}
+		env, err := protocol.Unmarshal(data)
+		if err != nil {
+			continue
+		}
+		switch env.Type {
+		case protocol.TypeRegister:
+			var reg protocol.RegisterPayload
+			if err := env.DecodePayload(&reg); err != nil {
+				continue
+			}
+			sc.mu.Lock()
+			sc.cards[reg.Name] = reg.Card()
+			sc.conns[c] = struct{}{}
+			roster := sc.snapshotLocked()
+			sc.mu.Unlock()
+
+			respData, _ := protocol.EncodePayload(roster)
+			resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true, Data: respData})
+			c.send(resp)
+			sc.broadcast(roster)
+		case protocol.TypeJump:
+			var jp protocol.JumpPayload
+			if err := env.DecodePayload(&jp); err != nil {
+				continue
+			}
+			if jp.Action == "ping" {
+				data, _ := protocol.EncodePayload(map[string]any{"pong": true, "who": "stub-center"})
+				resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true, Data: data})
+				c.send(resp)
+			}
+		case protocol.TypeHeartbeat:
+			// 忽略
+		}
+	}
+}
+
+func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
+	names := make([]string, 0, len(sc.cards))
+	for n := range sc.cards {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	services := make([]protocol.ServiceCard, 0, len(names))
+	for _, n := range names {
+		services = append(services, sc.cards[n])
+	}
+	return protocol.RosterPayload{Services: services, Revision: 1}
+}
+
+func (sc *stubCenter) broadcast(roster protocol.RosterPayload) {
+	sc.mu.Lock()
+	targets := make([]*stubConn, 0, len(sc.conns))
+	for c := range sc.conns {
+		targets = append(targets, c)
+	}
+	sc.mu.Unlock()
+	for _, c := range targets {
+		env, err := protocol.NewEnvelope(protocol.TypeRoster, "stub-center", "", "", roster)
+		if err == nil {
+			c.send(env)
+		}
+	}
+}
+
+// ---------- 测试辅助 ----------
+
+func startAgent(t *testing.T, centerURL string) *loop.Loop {
+	t.Helper()
+	logger := log.New(os.Stdout, "[agent-test] ", log.LstdFlags)
+	l := loop.New(loop.Config{
+		Name:              "agentloop",
+		Listen:            "127.0.0.1:0",
+		Center:            centerURL,
+		HeartbeatInterval: 100 * time.Millisecond,
+	}, logger)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := l.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(l.Shutdown)
+	return l
+}
+
+func dialAgent(t *testing.T, l *loop.Loop) *protocol.Client {
+	t.Helper()
+	c, err := protocol.Dial(l.WsURL(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// jump 对 agentloop 发起一次跳转并返回响应 payload。
+func jump(t *testing.T, c *protocol.Client, action string, input any, ctx context.Context) protocol.ResponsePayload {
+	t.Helper()
+	raw, err := protocol.EncodePayload(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := protocol.NewEnvelope(protocol.TypeJump, "test", "agentloop", "", protocol.JumpPayload{Action: action, Input: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Call(ctx, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rp protocol.ResponsePayload
+	if err := resp.DecodePayload(&rp); err != nil {
+		t.Fatal(err)
+	}
+	return rp
+}
+
+// ---------- 用例 ----------
+
+// TestRegisterAndEcho 验证：注册后名册到账；echo 动作可用。
+func TestRegisterAndEcho(t *testing.T) {
+	sc := startStubCenter(t)
+	l := startAgent(t, sc.URL())
+
+	roster := l.Roster()
+	if len(roster) != 2 || roster[0].Name != "agentloop" || roster[1].Name != "stub-center" {
+		t.Fatalf("名册不符: %+v", roster)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := dialAgent(t, l)
+
+	rp := jump(t, c, "echo", map[string]any{"msg": "hi"}, ctx)
+	if !rp.OK {
+		t.Fatalf("echo 失败: %s", rp.Error)
+	}
+	var out struct {
+		Who  string `msgpack:"who"`
+		Echo struct {
+			Msg string `msgpack:"msg"`
+		} `msgpack:"echo"`
+	}
+	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Who != "agentloop" || out.Echo.Msg != "hi" {
+		t.Fatalf("echo 结果不符: %+v", out)
+	}
+}
+
+// TestSelfJump 验证自我跳转：debug_jump 到 self，再回 echo——
+// 这是“循环 = 自我跳转链”的最小形态。
+func TestSelfJump(t *testing.T) {
+	sc := startStubCenter(t)
+	l := startAgent(t, sc.URL())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := dialAgent(t, l)
+
+	rp := jump(t, c, "debug_jump", map[string]any{
+		"to":     "self",
+		"action": "echo",
+		"input":  map[string]any{"n": 42},
+	}, ctx)
+	if !rp.OK {
+		t.Fatalf("自跳失败: %s", rp.Error)
+	}
+	var out struct {
+		Who  string `msgpack:"who"`
+		Echo struct {
+			N int `msgpack:"n"`
+		} `msgpack:"echo"`
+	}
+	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Who != "agentloop" || out.Echo.N != 42 {
+		t.Fatalf("自跳结果不符: %+v", out)
+	}
+}
+
+// TestJumpToCenter 验证跨服务跳转：debug_jump 经名册解析地址，访问 stub-center 的 ping。
+func TestJumpToCenter(t *testing.T) {
+	sc := startStubCenter(t)
+	l := startAgent(t, sc.URL())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := dialAgent(t, l)
+
+	rp := jump(t, c, "debug_jump", map[string]any{
+		"to":     "stub-center",
+		"action": "ping",
+	}, ctx)
+	if !rp.OK {
+		t.Fatalf("跳转中心失败: %s", rp.Error)
+	}
+	var out struct {
+		Pong bool   `msgpack:"pong"`
+		Who  string `msgpack:"who"`
+	}
+	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Pong || out.Who != "stub-center" {
+		t.Fatalf("ping 结果不符: %+v", out)
+	}
+}
