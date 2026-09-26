@@ -183,6 +183,13 @@ flowchart LR
 - 心跳默认 15s；离线判定 = 2 倍间隔超时，设置中心更新 roster 推送（无专门离线消息）
 - 拉取全量清单复用 `jump`（`action: "roster"`），不新增消息类型
 
+#### 任务链动作（agentloop）
+
+- `user_message`（链入口）：payload `{text}`；**发起者必须设 `boss`**；受理后立即回执，最终结果稍后经 `deliver` 送达
+- `step`（自跳继续）：payload `{messages}`——完整消息历史随消息携带；**发出即完**（不等待）
+- `deliver`（约定动作，**由 boss 实现**）：payload `{text}`；链终点判定结束直送 boss（交付方同步等回执）
+- **工具命名**：`<service>__<action>`——由 roster 的 `provides` 自动生成；`user_message` / `step` / `deliver` 属结构性动作，不暴露为工具
+
 **后续批次（占名）**
 
 - `approval_request` / `approval_result`（agentloop ↔ qq/web）：审批挂起与裁决

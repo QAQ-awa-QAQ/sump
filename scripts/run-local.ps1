@@ -1,9 +1,12 @@
 ﻿# SUMP v2 本地开发：一键启动第一批服务（settings-center + agentloop）
-# 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-AgentAddr 127.0.0.1:9101]
+# 用法：.\scripts\run-local.ps1 [-CenterAddr 127.0.0.1:9000] [-AgentAddr 127.0.0.1:9101] [-LlmKey sk-...] [-LlmModel deepseek-chat]
 # 停止：Ctrl+C（脚本会清理两个子进程）
 param(
     [string]$CenterAddr = '127.0.0.1:9000',
-    [string]$AgentAddr = '127.0.0.1:9101'
+    [string]$AgentAddr = '127.0.0.1:9101',
+    [string]$LlmBase = 'https://api.deepseek.com',
+    [string]$LlmKey = $env:DEEPSEEK_API_KEY,
+    [string]$LlmModel = 'deepseek-chat'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,7 +50,9 @@ try {
     if (-not (Wait-Port $CenterAddr 60)) { throw 'settings-center 未在 60 秒内就绪' }
 
     Write-Host '[3/3] 启动 agentloop ...' -ForegroundColor Cyan
-    $agent = Start-Process -FilePath (Join-Path $binDir 'agentloop.exe') -ArgumentList '-addr', $AgentAddr, '-center', "ws://$CenterAddr/ws" -PassThru -NoNewWindow
+    $agentArgs = @('-addr', $AgentAddr, '-center', "ws://$CenterAddr/ws", '-llm-base', $LlmBase, '-llm-model', $LlmModel)
+    if ($LlmKey) { $agentArgs += @('-llm-key', $LlmKey) }
+    $agent = Start-Process -FilePath (Join-Path $binDir 'agentloop.exe') -ArgumentList $agentArgs -PassThru -NoNewWindow
 
     Write-Host ''
     Write-Host "settings-center: ws://$CenterAddr/ws  (PID $($center.Id))"
