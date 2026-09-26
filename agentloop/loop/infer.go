@@ -95,26 +95,36 @@ func rawToJSONText(raw msgpack.RawMessage) string {
 // 任何失败都转成 tool 消息内容（交回 LLM 决定），不中断链。
 func (l *Loop) executeToolCall(ctx context.Context, env protocol.Envelope, call llm.ToolCall) llm.Message {
 	msg := llm.Message{Role: "tool", ToolCallID: call.ID}
-	svc, action, ok := parseToolName(call.Function.Name)
-	if !ok {
-		msg.Content = "错误: 工具名无效: " + call.Function.Name
+	content, err := l.runToolCall(ctx, env, call)
+	if err != nil {
+		l.logger.Printf("工具 %s 失败: %v", call.Function.Name, err)
+		msg.Content = "错误: " + err.Error()
 		return msg
 	}
-	targetName, targetAddr, err := l.resolve(svc)
-	if err == nil {
-		var rawIn msgpack.RawMessage
-		rawIn, err = argsToRaw(call.Function.Arguments)
-		if err == nil {
-			var data msgpack.RawMessage
-			data, err = l.callService(ctx, targetName, targetAddr, action, rawIn, env.Trace)
-			if err == nil {
-				msg.Content = rawToJSONText(data)
-				return msg
-			}
-		}
-	}
-	msg.Content = "错误: " + err.Error()
+	l.logger.Printf("工具 %s 完成: %.120s", call.Function.Name, content)
+	msg.Content = content
 	return msg
+}
+
+// runToolCall 执行工具调用并返回给 LLM 的内容文本（JSON）。
+func (l *Loop) runToolCall(ctx context.Context, env protocol.Envelope, call llm.ToolCall) (string, error) {
+	svc, action, ok := parseToolName(call.Function.Name)
+	if !ok {
+		return "", fmt.Errorf("工具名无效: %s", call.Function.Name)
+	}
+	targetName, targetAddr, err := l.resolve(svc)
+	if err != nil {
+		return "", err
+	}
+	rawIn, err := argsToRaw(call.Function.Arguments)
+	if err != nil {
+		return "", err
+	}
+	data, err := l.callService(ctx, targetName, targetAddr, action, rawIn, env.Trace)
+	if err != nil {
+		return "", err
+	}
+	return rawToJSONText(data), nil
 }
 
 // runToolCalls 并行执行多个工具调用，结果按调用顺序返回。
