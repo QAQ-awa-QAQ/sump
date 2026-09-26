@@ -259,9 +259,9 @@ type agentRequest struct {
 }
 
 type stubAgentloop struct {
-	ln  net.Listener
-	srv *http.Server
-	mu  sync.Mutex
+	ln   net.Listener
+	srv  *http.Server
+	mu   sync.Mutex
 	reqs []agentRequest
 }
 
@@ -379,9 +379,9 @@ func (a *stubAgentloop) sendDeliver(t *testing.T, qqURL, text, cid string) {
 // ---------- stub images ----------
 
 type stubImages struct {
-	ln  net.Listener
-	srv *http.Server
-	mu  sync.Mutex
+	ln    net.Listener
+	srv   *http.Server
+	mu    sync.Mutex
 	saves []string
 }
 
