@@ -1,6 +1,6 @@
 package tests
 
-// qq 服务级测试：真 qq 服务 + stub NapCat / stub center / stub agentloop / stub images。
+// qq 服务级测试：真 qq 服务 + stub NapCat / stub center / stub reasoner / stub images。
 // 覆盖：主人文本 → user_message（boss/cid 正确）→ deliver → 发回 QQ；
 //       图片消息 → images.save → user_message 携带图片 id；
 //       非主人私聊被拒绝（回拒绝语、不触发任务）。
@@ -250,7 +250,7 @@ func privateImageEvent(uid int64, text, url string) map[string]any {
 	}
 }
 
-// ---------- stub agentloop ----------
+// ---------- stub reasoner ----------
 
 type agentRequest struct {
 	From    string
@@ -258,20 +258,20 @@ type agentRequest struct {
 	Payload map[string]any
 }
 
-type stubAgentloop struct {
+type stubReasoner struct {
 	ln   net.Listener
 	srv  *http.Server
 	mu   sync.Mutex
 	reqs []agentRequest
 }
 
-func startStubAgentloop(t *testing.T, center *stubCenter) *stubAgentloop {
+func startStubReasoner(t *testing.T, center *stubCenter) *stubReasoner {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &stubAgentloop{ln: ln}
+	a := &stubReasoner{ln: ln}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", a.handleWS)
 	a.srv = &http.Server{Handler: mux}
@@ -279,14 +279,14 @@ func startStubAgentloop(t *testing.T, center *stubCenter) *stubAgentloop {
 	t.Cleanup(func() { _ = a.srv.Close() })
 
 	center.mu.Lock()
-	center.cards["agentloop"] = protocol.ServiceCard{Name: "agentloop", Addr: a.URL(), Description: "llm 测试替身"}
+	center.cards["reasoner"] = protocol.ServiceCard{Name: "reasoner", Addr: a.URL(), Description: "llm 测试替身"}
 	center.mu.Unlock()
 	return a
 }
 
-func (a *stubAgentloop) URL() string { return "ws://" + a.ln.Addr().String() + "/ws" }
+func (a *stubReasoner) URL() string { return "ws://" + a.ln.Addr().String() + "/ws" }
 
-func (a *stubAgentloop) handleWS(w http.ResponseWriter, r *http.Request) {
+func (a *stubReasoner) handleWS(w http.ResponseWriter, r *http.Request) {
 	ws, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -315,13 +315,13 @@ func (a *stubAgentloop) handleWS(w http.ResponseWriter, r *http.Request) {
 			a.mu.Lock()
 			a.reqs = append(a.reqs, agentRequest{From: env.From, Boss: env.Boss, Payload: payload})
 			a.mu.Unlock()
-			resp, _ := protocol.NewResponse(env, "agentloop", protocol.ResponsePayload{OK: true})
+			resp, _ := protocol.NewResponse(env, "reasoner", protocol.ResponsePayload{OK: true})
 			c.send(resp)
 		}
 	}
 }
 
-func (a *stubAgentloop) waitRequest(t *testing.T, timeout time.Duration) agentRequest {
+func (a *stubReasoner) waitRequest(t *testing.T, timeout time.Duration) agentRequest {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -338,14 +338,14 @@ func (a *stubAgentloop) waitRequest(t *testing.T, timeout time.Duration) agentRe
 	return agentRequest{}
 }
 
-func (a *stubAgentloop) count() int {
+func (a *stubReasoner) count() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return len(a.reqs)
 }
 
 // sendDeliver 模拟链终点向 qq 交付结果。
-func (a *stubAgentloop) sendDeliver(t *testing.T, qqURL, text, cid string) {
+func (a *stubReasoner) sendDeliver(t *testing.T, qqURL, text, cid string) {
 	t.Helper()
 	raw, err := protocol.EncodePayload(protocol.DeliverPayload{Text: text, ConversationID: cid})
 	if err != nil {
@@ -358,7 +358,7 @@ func (a *stubAgentloop) sendDeliver(t *testing.T, qqURL, text, cid string) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "agentloop", "qq", "trace-deliver", protocol.JumpPayload{Action: "deliver", Input: raw})
+	env, err := protocol.NewEnvelope(protocol.TypeJump, "reasoner", "qq", "trace-deliver", protocol.JumpPayload{Action: "deliver", Input: raw})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func startQQ(t *testing.T, sc *stubCenter, nc *stubNapCat, owner string) *server
 		HeartbeatInterval: 200 * time.Millisecond,
 		NapCatURL:         nc.URL(),
 		Owner:             owner,
-		Agent:             "agentloop",
+		Agent:             "reasoner",
 		Images:            "images",
 	}, logger)
 	// t.Context()：随测试结束取消——napcat 连接循环需要活的 ctx，不能用 defer cancel()。
@@ -489,7 +489,7 @@ func startQQ(t *testing.T, sc *stubCenter, nc *stubNapCat, owner string) *server
 func TestPrivateTextFlow(t *testing.T) {
 	sc := startStubCenter(t)
 	nc := startStubNapCat(t)
-	al := startStubAgentloop(t, sc)
+	al := startStubReasoner(t, sc)
 	_ = startStubImages(t, sc)
 	qq := startQQ(t, sc, nc, "2271917353")
 
@@ -522,7 +522,7 @@ func TestPrivateTextFlow(t *testing.T) {
 func TestPrivateImageFlow(t *testing.T) {
 	sc := startStubCenter(t)
 	nc := startStubNapCat(t)
-	al := startStubAgentloop(t, sc)
+	al := startStubReasoner(t, sc)
 	im := startStubImages(t, sc)
 	_ = startQQ(t, sc, nc, "2271917353")
 
@@ -546,7 +546,7 @@ func TestPrivateImageFlow(t *testing.T) {
 func TestNonOwnerRejected(t *testing.T) {
 	sc := startStubCenter(t)
 	nc := startStubNapCat(t)
-	al := startStubAgentloop(t, sc)
+	al := startStubReasoner(t, sc)
 	_ = startStubImages(t, sc)
 	_ = startQQ(t, sc, nc, "2271917353")
 

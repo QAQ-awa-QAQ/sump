@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/agentloop/llm"
-	"github.com/QAQ-awa-QAQ/sump/agentloop/loop"
 	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
+	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
 )
 
 // stubImages 是图片服务替身：fetch 请求 → 返回预置 base64。
@@ -116,8 +116,8 @@ func TestImagePrefetch(t *testing.T) {
 	fake := &llm.Fake{Replies: []llm.Message{{Role: "assistant", Content: "图看完了"}}}
 
 	logger := log.New(os.Stdout, "[img-test] ", log.LstdFlags)
-	l := loop.New(loop.Config{
-		Name:              "agentloop",
+	s := server.New(server.Config{
+		Name:              "reasoner",
 		Listen:            "127.0.0.1:0",
 		Center:            sc.URL(),
 		HeartbeatInterval: 100 * time.Millisecond,
@@ -127,13 +127,13 @@ func TestImagePrefetch(t *testing.T) {
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := l.Start(ctx); err != nil {
+	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(l.Shutdown)
-	mem.setAgentURL(l.WsURL())
+	t.Cleanup(s.Shutdown)
+	mem.setAgentURL(s.WsURL())
 
-	c := dialAgent(t, l)
+	c := dialAgent(t, s)
 	raw, err := protocol.EncodePayload(map[string]any{
 		"text":            "看看这图",
 		"conversation_id": "c-img",
@@ -142,7 +142,7 @@ func TestImagePrefetch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "test", "agentloop", "", protocol.JumpPayload{Action: "user_message", Input: raw})
+	req, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
 	if err != nil {
 		t.Fatal(err)
 	}

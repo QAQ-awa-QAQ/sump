@@ -106,7 +106,7 @@ sequenceDiagram
 
 - 服务间 WS **不做纯长连接**：默认短连接、空闲即断；访问频繁则连接保留时长上涨，冷下来回落——随实际访问频率自适应增减。
 - **连接时长可配置**：每个服务可自定义自己的默认连接时长（可作为“可设置项”，由设置中心统一下发）。
-- **流式直通**：LLM token 流从 agentloop 一路透传到 QQ / 浏览器，中间不攒批。
+- **流式直通**：LLM token 流从 reasoner 一路透传到 QQ / 浏览器，中间不攒批。
 - **并行跳转**：一轮内多个跳转并行发出（goroutine），汇合后继续推理。
 
 ### 协议格式
@@ -138,7 +138,7 @@ sequenceDiagram
   "trace": "01J...",             // 链路 id（同一条用户请求的全链共享）
   "boss": "qq",                  // 老板：本跳“面向谁工作”（结果归属；不强制沿用上游）
   "type": "register",            // 消息类型 = 动作（register / jump / ...）
-  "from": "agentloop",
+  "from": "reasoner",
   "to": "settings-center",
   "payload": { }                 // 该动作的数据
 }
@@ -153,9 +153,9 @@ sequenceDiagram
 ```jsonc
 {
   "v": 1, "id": "01J...", "trace": "01J...", "type": "register",
-  "from": "agentloop", "to": "settings-center",
+  "from": "reasoner", "to": "settings-center",
   "payload": {
-    "name": "agentloop",
+    "name": "reasoner",
     "addr": "ws://127.0.0.1:9101/ws",        // 自己的位置
     "description": "LLM 单步推理：决定下一步跳转（工具 / 自己 / 审批 / 回复）",
     "provides": [                             // 接受什么输入、有什么输出
@@ -214,9 +214,9 @@ sequenceDiagram
 - 心跳默认 15s；离线判定 = 2 倍间隔超时，设置中心更新 roster 推送（无专门离线消息）
 - 拉取全量清单复用 `jump`（`action: "roster"`），不新增消息类型
 
-#### 任务链动作（agentloop）
+#### 任务链动作（reasoner）
 
-- `user_message`（链入口）：payload `{text}`；**发起者必须设 `boss`**；受理后立即回执，最终结果稍后经 `deliver` 送达
+- `user_message`（链入口）：payload `{text, conversation_id, images}`；**发起者必须设 `boss`**；受理后立即回执，最终结果稍后经 `deliver` 送达
 - `step`（自跳继续）：payload `{messages}`——完整消息历史随消息携带；**发出即完**（不等待）
 - `deliver`（约定动作，**由 boss 实现**）：payload `{text}`；链终点判定结束直送 boss（交付方同步等回执）
 - **工具命名**：`<service>__<action>`——由 roster 的 `provides` 自动生成；`user_message` / `step` / `deliver` / `recall` / `resume` / `store` 属链机制动作，不暴露为工具
@@ -229,7 +229,7 @@ sequenceDiagram
 
 **后续批次（占名）**
 
-- `approval_request` / `approval_result`（agentloop ↔ qq/web）：审批挂起与裁决
+- `approval_request` / `approval_result`（reasoner ↔ qq/web）：审批挂起与裁决
 - `configure`（设置中心 → 服务）：下发设置变更；“调度 = 设置行为、设计工作流”的消息形态待设计
 
 ### 服务清单（草案 · 语言已定）
@@ -238,7 +238,7 @@ sequenceDiagram
 
 | 候选服务 | 语言 | 职责 | 来自 1 的模块 | 备注 |
 | -------- | ---- | ---- | ------------- | ---- |
-| **agentloop** | Go | LLM 单步推理与跳转决策（循环 = 自我跳转链） | `agent.py`、`core/`（planner/executor）、`core/models/`、`evaluation/` | **第一批** |
+| **reasoner** | Go | LLM 单步推理与跳转决策（循环 = 自我跳转链） | `agent.py`、`core/`（planner/executor）、`core/models/`、`evaluation/` | **第一批** |
 | **settings-center**（设置中心） | Go | 服务注册 · 全局信息 · 设置 · 调度/工作流 | `settings.py`、`config.py` | **第一批** |
 | sessions（会话） | Go | 会话历史与上下文持久化 | `api/session_manager.py`、`core/context.py` | 与接入服务的边界待定 |
 | memory（记忆） | Go | 会话历史 + 上下文组装（recall/resume/store，完全启动链）；四层记忆/检索/巩固后续批次 | `memory/`（除 embedder）、记忆巩固工具、`core/sleep.py` | **已实现**（第二批） |
@@ -250,7 +250,7 @@ sequenceDiagram
 | web（Web 接入） | Go | 浏览器 REST/SSE 接入（不带前端） | `api/` | UI 归 frontend 服务 |
 | frontend（前端服务） | TS | 浏览器 UI，独立服务节点 | `frontend/` | **后续批次**；当前所有服务不带前端 |
 | assets（资产） | Go | 文件资产库、索引、检索 | `assets.py` | |
-| skills（技能） | 并入 agentloop | 技能创建 / 加载 | `skills/` | |
+| skills（技能） | 并入 reasoner | 技能创建 / 加载 | `skills/` | |
 | smart-home（智能家居） | Go | 家居控制后端 | `smart_home/` | 或并入 tools |
 | search（搜索） | 无服务 | 搜索接入 | `tools/mcp/` + searxng | searxng 已是独立容器 |
 
@@ -287,7 +287,7 @@ sequenceDiagram
 
 ## 6. 实施路线
 
-- **第一批**：agentloop + 设置中心（纯后端，不带前端）
+- **第一批**：reasoner + 设置中心（纯后端，不带前端）
 - **第二批**：memory（记忆服务）——recall / resume / store 与完全启动链
 - **第三批**：qq + images（第一个真实入口）——QQ 私聊 → 任务链 → 回发；图片存取链路
 

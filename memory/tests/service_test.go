@@ -133,7 +133,7 @@ func (sc *stubCenter) snapshotLocked() protocol.RosterPayload {
 	return protocol.RosterPayload{Services: services, Revision: 1}
 }
 
-// ---------- 调用方替身（扮演 llm / agentloop） ----------
+// ---------- 调用方替身（扮演 llm / reasoner） ----------
 
 type stubCaller struct {
 	ln      net.Listener
@@ -168,8 +168,8 @@ func startStubCaller(t *testing.T, centerURL string) *stubCaller {
 	t.Cleanup(func() { _ = reg.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, "agentloop", "settings-center", "", protocol.RegisterPayload{
-		Name: "agentloop", Addr: c.URL(), Description: "llm 测试替身",
+	env, err := protocol.NewEnvelope(protocol.TypeRegister, "reasoner", "settings-center", "", protocol.RegisterPayload{
+		Name: "reasoner", Addr: c.URL(), Description: "llm 测试替身",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +220,7 @@ func (c *stubCaller) handleWS(w http.ResponseWriter, r *http.Request) {
 				default:
 				}
 			}
-			resp, _ := protocol.NewResponse(env, "agentloop", protocol.ResponsePayload{OK: true})
+			resp, _ := protocol.NewResponse(env, "reasoner", protocol.ResponsePayload{OK: true})
 			_ = writeConn(ws, resp)
 		}
 	}
@@ -246,7 +246,7 @@ func (c *stubCaller) call(t *testing.T, memoryURL, action string, input any) pro
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "agentloop", "memory", "trace-test", protocol.JumpPayload{Action: action, Input: raw})
+	env, err := protocol.NewEnvelope(protocol.TypeJump, "reasoner", "memory", "trace-test", protocol.JumpPayload{Action: action, Input: raw})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func (c *stubCaller) recallUntilReady(t *testing.T, memoryURL string, input prot
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatal("recall 重试超时：memory 名册中始终未见 agentloop")
+	t.Fatal("recall 重试超时：memory 名册中始终未见 reasoner")
 	return protocol.ResponsePayload{}
 }
 

@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/agentloop/llm"
-	"github.com/QAQ-awa-QAQ/sump/agentloop/loop"
 	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
+	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
 )
 
 func TestLiveDeepSeek(t *testing.T) {
@@ -40,8 +40,8 @@ func TestLiveDeepSeek(t *testing.T) {
 	mem := startStubMemory(t, sc)
 
 	logger := log.New(os.Stdout, "[live] ", log.LstdFlags)
-	l := loop.New(loop.Config{
-		Name:              "agentloop",
+	s := server.New(server.Config{
+		Name:              "reasoner",
 		Listen:            "127.0.0.1:0",
 		Center:            sc.URL(),
 		HeartbeatInterval: 5 * time.Second,
@@ -50,20 +50,20 @@ func TestLiveDeepSeek(t *testing.T) {
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := l.Start(ctx); err != nil {
+	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(l.Shutdown)
-	mem.setAgentURL(l.WsURL())
+	t.Cleanup(s.Shutdown)
+	mem.setAgentURL(s.WsURL())
 
-	c := dialAgent(t, l)
+	c := dialAgent(t, s)
 	raw, err := protocol.EncodePayload(map[string]any{
-		"text": "请先调用 agentloop__echo 工具（参数为 {\"msg\": \"ping-live\"}），然后用一句话告诉我工具返回了什么。",
+		"text": "请先调用 reasoner__echo 工具（参数为 {\"msg\": \"ping-live\"}），然后用一句话告诉我工具返回了什么。",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "live-test", "agentloop", "", protocol.JumpPayload{Action: "user_message", Input: raw})
+	req, err := protocol.NewEnvelope(protocol.TypeJump, "live-test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
 	if err != nil {
 		t.Fatal(err)
 	}

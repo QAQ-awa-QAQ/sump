@@ -1,5 +1,5 @@
-// Package tests 是 agentloop 的服务内集成测试：
-// 最小“设置中心”替身 + 真实 agentloop 实例，走真实 WS 通信。
+// Package tests 是 reasoner 的服务内集成测试：
+// 最小“设置中心”替身 + 真实 reasoner 实例，走真实 WS 通信。
 package tests
 
 import (
@@ -15,8 +15,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/QAQ-awa-QAQ/sump/agentloop/loop"
 	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
 )
 
 // ---------- 设置中心的最小替身 ----------
@@ -157,27 +157,27 @@ func (sc *stubCenter) broadcast(roster protocol.RosterPayload) {
 
 // ---------- 测试辅助 ----------
 
-func startAgent(t *testing.T, centerURL string) *loop.Loop {
+func startAgent(t *testing.T, centerURL string) *server.Server {
 	t.Helper()
 	logger := log.New(os.Stdout, "[agent-test] ", log.LstdFlags)
-	l := loop.New(loop.Config{
-		Name:              "agentloop",
+	s := server.New(server.Config{
+		Name:              "reasoner",
 		Listen:            "127.0.0.1:0",
 		Center:            centerURL,
 		HeartbeatInterval: 100 * time.Millisecond,
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := l.Start(ctx); err != nil {
+	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(l.Shutdown)
-	return l
+	t.Cleanup(s.Shutdown)
+	return s
 }
 
-func dialAgent(t *testing.T, l *loop.Loop) *protocol.Client {
+func dialAgent(t *testing.T, s *server.Server) *protocol.Client {
 	t.Helper()
-	c, err := protocol.Dial(l.WsURL(), nil)
+	c, err := protocol.Dial(s.WsURL(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,14 +185,14 @@ func dialAgent(t *testing.T, l *loop.Loop) *protocol.Client {
 	return c
 }
 
-// jump 对 agentloop 发起一次跳转并返回响应 payload。
+// jump 对 reasoner 发起一次跳转并返回响应 payload。
 func jump(t *testing.T, c *protocol.Client, action string, input any, ctx context.Context) protocol.ResponsePayload {
 	t.Helper()
 	raw, err := protocol.EncodePayload(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := protocol.NewEnvelope(protocol.TypeJump, "test", "agentloop", "", protocol.JumpPayload{Action: action, Input: raw})
+	env, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: action, Input: raw})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,16 +212,16 @@ func jump(t *testing.T, c *protocol.Client, action string, input any, ctx contex
 // TestRegisterAndEcho 验证：注册后名册到账；echo 动作可用。
 func TestRegisterAndEcho(t *testing.T) {
 	sc := startStubCenter(t)
-	l := startAgent(t, sc.URL())
+	s := startAgent(t, sc.URL())
 
-	roster := l.Roster()
-	if len(roster) != 2 || roster[0].Name != "agentloop" || roster[1].Name != "stub-center" {
+	roster := s.Roster()
+	if len(roster) != 2 || roster[0].Name != "reasoner" || roster[1].Name != "stub-center" {
 		t.Fatalf("名册不符: %+v", roster)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := dialAgent(t, l)
+	c := dialAgent(t, s)
 
 	rp := jump(t, c, "echo", map[string]any{"msg": "hi"}, ctx)
 	if !rp.OK {
@@ -236,7 +236,7 @@ func TestRegisterAndEcho(t *testing.T) {
 	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Who != "agentloop" || out.Echo.Msg != "hi" {
+	if out.Who != "reasoner" || out.Echo.Msg != "hi" {
 		t.Fatalf("echo 结果不符: %+v", out)
 	}
 }
@@ -245,11 +245,11 @@ func TestRegisterAndEcho(t *testing.T) {
 // 这是“循环 = 自我跳转链”的最小形态。
 func TestSelfJump(t *testing.T) {
 	sc := startStubCenter(t)
-	l := startAgent(t, sc.URL())
+	s := startAgent(t, sc.URL())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := dialAgent(t, l)
+	c := dialAgent(t, s)
 
 	rp := jump(t, c, "debug_jump", map[string]any{
 		"to":     "self",
@@ -268,7 +268,7 @@ func TestSelfJump(t *testing.T) {
 	if err := protocol.DecodeRaw(rp.Data, &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Who != "agentloop" || out.Echo.N != 42 {
+	if out.Who != "reasoner" || out.Echo.N != 42 {
 		t.Fatalf("自跳结果不符: %+v", out)
 	}
 }
@@ -276,11 +276,11 @@ func TestSelfJump(t *testing.T) {
 // TestJumpToCenter 验证跨服务跳转：debug_jump 经名册解析地址，访问 stub-center 的 ping。
 func TestJumpToCenter(t *testing.T) {
 	sc := startStubCenter(t)
-	l := startAgent(t, sc.URL())
+	s := startAgent(t, sc.URL())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := dialAgent(t, l)
+	c := dialAgent(t, s)
 
 	rp := jump(t, c, "debug_jump", map[string]any{
 		"to":     "stub-center",

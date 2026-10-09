@@ -1,4 +1,4 @@
-module github.com/QAQ-awa-QAQ/sump/agentloop
+module github.com/QAQ-awa-QAQ/sump/reasoner
 
 go 1.26
 

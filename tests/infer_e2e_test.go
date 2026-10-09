@@ -1,6 +1,6 @@
 package tests
 
-// M3：假 DeepSeek 驱动的真进程端到端——settings-center + agentloop + memory + 假 boss。
+// M3：假 DeepSeek 驱动的真进程端到端——settings-center + reasoner + memory + 假 boss。
 // 零外网依赖：LLM 由本进程内的 OpenAI 兼容替身扮演；验证完全启动链与记忆注入。
 
 import (
@@ -57,7 +57,7 @@ func startFakeDeepSeek(t *testing.T, toolFirst bool) *fakeDeepSeek {
 					"id":   "call_e2e",
 					"type": "function",
 					"function": map[string]any{
-						"name":      "agentloop__echo",
+						"name":      "reasoner__echo",
 						"arguments": `{"msg":"e2e"}`,
 					},
 				}},
@@ -204,7 +204,7 @@ func (b *e2eBoss) register(t *testing.T, centerURL string) *protocol.Client {
 // → 工具跳转 → 自跳 → 记忆往返 → deliver；并以预置会话历史验证记忆注入。
 func TestInferChainE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/agentloop")
+	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
 	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
 
 	fakeLLM := startFakeDeepSeek(t, true)
@@ -220,7 +220,7 @@ func TestInferChainE2E(t *testing.T) {
 	startProc(t, scBin, "-addr", fmt.Sprintf("127.0.0.1:%d", scPort))
 	waitWSReady(t, centerURL, 60*time.Second)
 
-	// memory 先启动（agentloop 需要从名册解析到它）。
+	// memory 先启动（reasoner 需要从名册解析到它）。
 	startProc(t, memBin,
 		"-addr", fmt.Sprintf("127.0.0.1:%d", memPort),
 		"-center", centerURL,
@@ -228,7 +228,7 @@ func TestInferChainE2E(t *testing.T) {
 	)
 	waitWSReady(t, memoryURL, 60*time.Second)
 
-	// boss 先进名册，再启动 agentloop。
+	// boss 先进名册，再启动 reasoner。
 	bossClient := boss.register(t, centerURL)
 	t.Cleanup(func() { _ = bossClient.Close() })
 
@@ -247,7 +247,7 @@ func TestInferChainE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = obs.Close() })
-	waitRosterHas(t, obs, "agentloop", 60*time.Second)
+	waitRosterHas(t, obs, "reasoner", 60*time.Second)
 	waitRosterHas(t, obs, "memory", 10*time.Second)
 
 	// 预置会话历史（上一轮的对话）——验证 recall 会把它注入 LLM 请求。
@@ -294,7 +294,7 @@ func TestInferChainE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "e2e", "agentloop", "", protocol.JumpPayload{Action: "user_message", Input: raw})
+	req, err := protocol.NewEnvelope(protocol.TypeJump, "e2e", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
 	if err != nil {
 		t.Fatal(err)
 	}

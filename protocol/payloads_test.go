@@ -20,7 +20,7 @@ func TestTaskContextRoundTrip(t *testing.T) {
 			{Role: "tool", Content: `{"ok":true}`, ToolCallID: "c1"},
 		},
 	}}
-	env, err := NewEnvelope(TypeJump, "agentloop", "memory", "trace-1", in)
+	env, err := NewEnvelope(TypeJump, "reasoner", "memory", "trace-1", in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,10 +55,10 @@ func TestTaskContextRoundTrip(t *testing.T) {
 
 	// Resume 与 Store 同构走一遍。
 	rp := ResumePayload{Context: out.Context}
-	if _, err := NewEnvelope(TypeJump, "memory", "agentloop", "trace-1", rp); err != nil {
+	if _, err := NewEnvelope(TypeJump, "memory", "reasoner", "trace-1", rp); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewEnvelope(TypeJump, "agentloop", "memory", "trace-1", StorePayload{ConversationID: "conv-1", Role: "user", Content: "你好"}); err != nil {
+	if _, err := NewEnvelope(TypeJump, "reasoner", "memory", "trace-1", StorePayload{ConversationID: "conv-1", Role: "user", Content: "你好"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -71,6 +71,7 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		out  any
 	}{
 		{"deliver", DeliverPayload{Text: "hi", ConversationID: "qq:private:10001"}, &DeliverPayload{}},
+		{"userMessage", UserMessagePayload{Text: "hi", ConversationID: "qq:private:10001", Images: []string{"img-1"}}, &UserMessagePayload{}},
 		{"save", ImageSavePayload{URL: "http://x/i.png", Mime: "image/png"}, &ImageSavePayload{}},
 		{"saveResult", ImageSaveResult{ID: "01J", Mime: "image/png", Size: 123}, &ImageSaveResult{}},
 		{"fetch", ImageFetchPayload{ID: "01J"}, &ImageFetchPayload{}},

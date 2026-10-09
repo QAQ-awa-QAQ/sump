@@ -1,4 +1,4 @@
-package loop
+package server
 
 // 单步推理：roster → LLM 工具、工具调用执行、自跳（step）与交付（deliver）。
 // 完全启动链：任务与自跳都先经记忆服务（recall 托管上下文）；只有“from=memory 的 resume”
@@ -15,12 +15,12 @@ import (
 
 	"github.com/vmihailenco/msgpack/v5"
 
-	"github.com/QAQ-awa-QAQ/sump/agentloop/llm"
 	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
 )
 
 // systemPrompt 是单步推理器的系统提示（M2 初版）。
-const systemPrompt = `你是 SUMP 服务网络中的“单步推理器”（agentloop 服务）。
+const systemPrompt = `你是 SUMP 服务网络中的“单步推理器”（reasoner 服务）。
 你会收到一段对话上下文。你的职责是决定下一步：
 1. 需要外部能力时，调用提供的工具（工具 = 网络中其他服务的动作）；
 2. 当任务可以收尾、或用户问候闲聊时，直接输出最终答复文本。
@@ -39,9 +39,9 @@ var structuralActions = map[string]bool{
 }
 
 // rosterTools 把名册里各服务的 provides 映射为 LLM 工具。
-func (l *Loop) rosterTools() []llm.Tool {
+func (s *Server) rosterTools() []llm.Tool {
 	var out []llm.Tool
-	for _, card := range l.Roster() {
+	for _, card := range s.Roster() {
 		for _, p := range card.Provides {
 			if structuralActions[p.Action] {
 				continue
@@ -98,26 +98,26 @@ func rawToJSONText(raw msgpack.RawMessage) string {
 
 // executeToolCall 执行一次工具调用：解析目标 → 跳转（短响应）→ 结果消息。
 // 任何失败都转成 tool 消息内容（交回 LLM 决定），不中断链。
-func (l *Loop) executeToolCall(ctx context.Context, env protocol.Envelope, call llm.ToolCall) llm.Message {
+func (s *Server) executeToolCall(ctx context.Context, env protocol.Envelope, call llm.ToolCall) llm.Message {
 	msg := llm.Message{Role: "tool", ToolCallID: call.ID}
-	content, err := l.runToolCall(ctx, env, call)
+	content, err := s.runToolCall(ctx, env, call)
 	if err != nil {
-		l.logger.Printf("工具 %s 失败: %v", call.Function.Name, err)
+		s.logger.Printf("工具 %s 失败: %v", call.Function.Name, err)
 		msg.Content = "错误: " + err.Error()
 		return msg
 	}
-	l.logger.Printf("工具 %s 完成: %.120s", call.Function.Name, content)
+	s.logger.Printf("工具 %s 完成: %.120s", call.Function.Name, content)
 	msg.Content = content
 	return msg
 }
 
 // runToolCall 执行工具调用并返回给 LLM 的内容文本（JSON）。
-func (l *Loop) runToolCall(ctx context.Context, env protocol.Envelope, call llm.ToolCall) (string, error) {
+func (s *Server) runToolCall(ctx context.Context, env protocol.Envelope, call llm.ToolCall) (string, error) {
 	svc, action, ok := parseToolName(call.Function.Name)
 	if !ok {
 		return "", fmt.Errorf("工具名无效: %s", call.Function.Name)
 	}
-	targetName, targetAddr, err := l.resolve(svc)
+	targetName, targetAddr, err := s.resolve(svc)
 	if err != nil {
 		return "", err
 	}
@@ -125,7 +125,7 @@ func (l *Loop) runToolCall(ctx context.Context, env protocol.Envelope, call llm.
 	if err != nil {
 		return "", err
 	}
-	data, err := l.callService(ctx, targetName, targetAddr, action, rawIn, env.Trace)
+	data, err := s.callService(ctx, targetName, targetAddr, action, rawIn, env.Trace)
 	if err != nil {
 		return "", err
 	}
@@ -133,14 +133,14 @@ func (l *Loop) runToolCall(ctx context.Context, env protocol.Envelope, call llm.
 }
 
 // runToolCalls 并行执行多个工具调用，结果按调用顺序返回。
-func (l *Loop) runToolCalls(ctx context.Context, env protocol.Envelope, calls []llm.ToolCall) []llm.Message {
+func (s *Server) runToolCalls(ctx context.Context, env protocol.Envelope, calls []llm.ToolCall) []llm.Message {
 	results := make([]llm.Message, len(calls))
 	var wg sync.WaitGroup
 	for i, call := range calls {
 		wg.Add(1)
 		go func(i int, call llm.ToolCall) {
 			defer wg.Done()
-			results[i] = l.executeToolCall(ctx, env, call)
+			results[i] = s.executeToolCall(ctx, env, call)
 		}(i, call)
 	}
 	wg.Wait()
@@ -149,7 +149,7 @@ func (l *Loop) runToolCalls(ctx context.Context, env protocol.Envelope, calls []
 
 // resolveImages 取“最近一条带图消息”的图片数据（id → data URL），供 LLM 内联。
 // 更早的图片引用保持文本占位（由 llm 序列化层处理）；失败仅记日志，不阻断推理。
-func (l *Loop) resolveImages(ctx context.Context, trace string, messages []llm.Message) map[string]string {
+func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm.Message) map[string]string {
 	var ids []string
 	for i := len(messages) - 1; i >= 0; i-- {
 		if len(messages[i].ImageIDs) > 0 {
@@ -160,9 +160,9 @@ func (l *Loop) resolveImages(ctx context.Context, trace string, messages []llm.M
 	if len(ids) == 0 {
 		return nil
 	}
-	targetName, targetAddr, err := l.resolve(l.cfg.Images)
+	targetName, targetAddr, err := s.resolve(s.cfg.Images)
 	if err != nil {
-		l.logger.Printf("取图失败（服务 %s）: %v", l.cfg.Images, err)
+		s.logger.Printf("取图失败（服务 %s）: %v", s.cfg.Images, err)
 		return nil
 	}
 	out := make(map[string]string, len(ids))
@@ -176,14 +176,14 @@ func (l *Loop) resolveImages(ctx context.Context, trace string, messages []llm.M
 		wg.Add(1)
 		go func(id string, raw msgpack.RawMessage) {
 			defer wg.Done()
-			data, err := l.callService(ctx, targetName, targetAddr, "fetch", raw, trace)
+			data, err := s.callService(ctx, targetName, targetAddr, "fetch", raw, trace)
 			if err != nil {
-				l.logger.Printf("取图 %s 失败: %v", id, err)
+				s.logger.Printf("取图 %s 失败: %v", id, err)
 				return
 			}
 			var fr protocol.ImageFetchResult
 			if err := protocol.DecodeRaw(data, &fr); err != nil || fr.Data == "" {
-				l.logger.Printf("取图 %s 结果无效", id)
+				s.logger.Printf("取图 %s 结果无效", id)
 				return
 			}
 			mu.Lock()
@@ -193,7 +193,7 @@ func (l *Loop) resolveImages(ctx context.Context, trace string, messages []llm.M
 	}
 	wg.Wait()
 	if len(out) > 0 {
-		l.logger.Printf("已取图 %d/%d 张（内联给模型）", len(out), len(ids))
+		s.logger.Printf("已取图 %d/%d 张（内联给模型）", len(out), len(ids))
 	}
 	return out
 }
@@ -205,70 +205,70 @@ type stepPayload struct {
 }
 
 // fireStep 自跳：向后继推理发 step——发出即完，后台尽力送达（失败记日志）。
-func (l *Loop) fireStep(env protocol.Envelope, conversationID string, messages []llm.Message) {
+func (s *Server) fireStep(env protocol.Envelope, conversationID string, messages []llm.Message) {
 	raw, err := protocol.EncodePayload(stepPayload{Messages: messages, ConversationID: conversationID})
 	if err != nil {
-		l.logger.Printf("step 编码失败: %v", err)
+		s.logger.Printf("step 编码失败: %v", err)
 		return
 	}
-	l.fireJump(l.cfg.Name, l.selfURL, "step", raw, env.Trace, env.Boss)
+	s.fireJump(s.cfg.Name, s.selfURL, "step", raw, env.Trace, env.Boss)
 }
 
 // fireToService 向名册中的服务发起一跳（发出即完；失败记日志）。
-func (l *Loop) fireToService(service, action string, payload any, trace, boss string) {
-	name, addr, err := l.resolve(service)
+func (s *Server) fireToService(service, action string, payload any, trace, boss string) {
+	name, addr, err := s.resolve(service)
 	if err != nil {
-		l.logger.Printf("fireToService %s(%s) 失败: %v", service, action, err)
+		s.logger.Printf("fireToService %s(%s) 失败: %v", service, action, err)
 		return
 	}
 	raw, err := protocol.EncodePayload(payload)
 	if err != nil {
-		l.logger.Printf("fireToService %s(%s) 编码失败: %v", service, action, err)
+		s.logger.Printf("fireToService %s(%s) 编码失败: %v", service, action, err)
 		return
 	}
-	l.fireJump(name, addr, action, raw, trace, boss)
+	s.fireJump(name, addr, action, raw, trace, boss)
 }
 
 // startMemoryRound 开启一轮“记忆往返”：把任务上下文（含原 boss）托管给记忆服务。
 // 记忆服务的 resume（from=memory）回来时才真正调用 LLM API（完全启动）。
-func (l *Loop) startMemoryRound(env protocol.Envelope, conversationID string, messages []llm.Message) {
-	l.fireToService(l.cfg.Memory, "recall", protocol.RecallPayload{Context: protocol.TaskContext{
+func (s *Server) startMemoryRound(env protocol.Envelope, conversationID string, messages []llm.Message) {
+	s.fireToService(s.cfg.Memory, "recall", protocol.RecallPayload{Context: protocol.TaskContext{
 		ConversationID: conversationID,
 		Messages:       messages,
 		Boss:           env.Boss,
-	}}, env.Trace, l.cfg.Name)
+	}}, env.Trace, s.cfg.Name)
 }
 
 // fireJump 后台发起一跳（不等最终结果；完成与否仅记日志）。
-func (l *Loop) fireJump(targetName, targetAddr, action string, input msgpack.RawMessage, trace, boss string) {
+func (s *Server) fireJump(targetName, targetAddr, action string, input msgpack.RawMessage, trace, boss string) {
 	go func() {
 		c, err := protocol.Dial(targetAddr, nil)
 		if err != nil {
-			l.logger.Printf("fireJump 连接 %s 失败: %v", targetAddr, err)
+			s.logger.Printf("fireJump 连接 %s 失败: %v", targetAddr, err)
 			return
 		}
 		defer c.Close()
-		env, err := protocol.NewEnvelope(protocol.TypeJump, l.cfg.Name, targetName, trace, protocol.JumpPayload{Action: action, Input: input})
+		env, err := protocol.NewEnvelope(protocol.TypeJump, s.cfg.Name, targetName, trace, protocol.JumpPayload{Action: action, Input: input})
 		if err != nil {
-			l.logger.Printf("fireJump 构造失败: %v", err)
+			s.logger.Printf("fireJump 构造失败: %v", err)
 			return
 		}
 		env.Boss = boss
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if _, err := c.Call(ctx, env); err != nil {
-			l.logger.Printf("fireJump %s(%s) 未确认送达: %v", targetName, action, err)
+			s.logger.Printf("fireJump %s(%s) 未确认送达: %v", targetName, action, err)
 		}
 	}()
 }
 
 // deliverToBoss 把最终结果交付给 boss（同步等回执；失败返回错误）。
 // 附带会话标识：boss 用它把结果路由回原会话（如 QQ 私聊）。
-func (l *Loop) deliverToBoss(ctx context.Context, env protocol.Envelope, conversationID, text string) error {
+func (s *Server) deliverToBoss(ctx context.Context, env protocol.Envelope, conversationID, text string) error {
 	if env.Boss == "" {
 		return errors.New("无 boss，结果无法交付")
 	}
-	targetName, targetAddr, err := l.resolve(env.Boss)
+	targetName, targetAddr, err := s.resolve(env.Boss)
 	if err != nil {
 		return err
 	}
@@ -276,7 +276,7 @@ func (l *Loop) deliverToBoss(ctx context.Context, env protocol.Envelope, convers
 	if err != nil {
 		return err
 	}
-	if _, err := l.callService(ctx, targetName, targetAddr, "deliver", data, env.Trace); err != nil {
+	if _, err := s.callService(ctx, targetName, targetAddr, "deliver", data, env.Trace); err != nil {
 		return fmt.Errorf("交付 boss(%s) 失败: %w", env.Boss, err)
 	}
 	return nil
@@ -284,14 +284,14 @@ func (l *Loop) deliverToBoss(ctx context.Context, env protocol.Envelope, convers
 
 // inferStep 是单步推理核心：一次 LLM 调用 → 决策（继续 / 收尾）。
 // 只被完全启动链触发（actionResume → inferStep）。
-func (l *Loop) inferStep(ctx context.Context, env protocol.Envelope, conversationID string, messages []llm.Message) (any, error) {
-	if l.cfg.LLM == nil {
+func (s *Server) inferStep(ctx context.Context, env protocol.Envelope, conversationID string, messages []llm.Message) (any, error) {
+	if s.cfg.LLM == nil {
 		return nil, errors.New("LLM 未配置（-llm-key 或环境变量 DEEPSEEK_API_KEY）")
 	}
-	resp, err := l.cfg.LLM.Chat(ctx, llm.ChatRequest{
+	resp, err := s.cfg.LLM.Chat(ctx, llm.ChatRequest{
 		Messages: messages,
-		Tools:    l.rosterTools(),
-		Images:   l.resolveImages(ctx, env.Trace, messages),
+		Tools:    s.rosterTools(),
+		Images:   s.resolveImages(ctx, env.Trace, messages),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("LLM 调用失败: %w", err)
@@ -300,20 +300,20 @@ func (l *Loop) inferStep(ctx context.Context, env protocol.Envelope, conversatio
 	switch {
 	case len(resp.ToolCalls) > 0:
 		// 并行执行工具（短响应），再自跳继续推理（下一轮先经记忆）——发出即完。
-		results := l.runToolCalls(ctx, env, resp.ToolCalls)
+		results := s.runToolCalls(ctx, env, resp.ToolCalls)
 		messages = append(messages, llm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls})
 		messages = append(messages, results...)
-		l.fireStep(env, conversationID, messages)
+		s.fireStep(env, conversationID, messages)
 		return map[string]any{"status": "accepted"}, nil
 	case strings.TrimSpace(resp.Content) != "":
 		// 判定结束：直接交付 boss（不沿链回传）。
-		if err := l.deliverToBoss(ctx, env, conversationID, resp.Content); err != nil {
+		if err := s.deliverToBoss(ctx, env, conversationID, resp.Content); err != nil {
 			return nil, err
 		}
 		// 交付成功：把最终答复记入记忆（尽力送达）。
-		l.fireToService(l.cfg.Memory, "store", protocol.StorePayload{
+		s.fireToService(s.cfg.Memory, "store", protocol.StorePayload{
 			ConversationID: conversationID, Role: "assistant", Content: resp.Content,
-		}, env.Trace, l.cfg.Name)
+		}, env.Trace, s.cfg.Name)
 		return map[string]any{"status": "done"}, nil
 	default:
 		return nil, errors.New("LLM 返回为空（既无 tool_calls 也无内容）")
@@ -322,12 +322,8 @@ func (l *Loop) inferStep(ctx context.Context, env protocol.Envelope, conversatio
 
 // actionUserMessage 是链的入口：boss 发来用户消息。
 // 半启动：把任务上下文托管给记忆服务（recall）——收到来自记忆的 resume 才完全启动。
-func (l *Loop) actionUserMessage(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	var p struct {
-		Text           string   `msgpack:"text"`
-		ConversationID string   `msgpack:"conversation_id,omitempty"`
-		Images         []string `msgpack:"images,omitempty"` // 图片引用（images 服务中的 id）
-	}
+func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.UserMessagePayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
 	}
@@ -340,20 +336,20 @@ func (l *Loop) actionUserMessage(_ context.Context, env protocol.Envelope, in pr
 	}
 
 	// 记一条用户消息（尽力送达；幂等与去重在记忆服务侧处理）。
-	l.fireToService(l.cfg.Memory, "store", protocol.StorePayload{
+	s.fireToService(s.cfg.Memory, "store", protocol.StorePayload{
 		ConversationID: cid, Role: "user", Content: p.Text,
-	}, env.Trace, l.cfg.Name)
+	}, env.Trace, s.cfg.Name)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: p.Text, ImageIDs: p.Images},
 	}
-	l.startMemoryRound(env, cid, messages)
+	s.startMemoryRound(env, cid, messages)
 	return map[string]any{"status": "accepted"}, nil
 }
 
 // actionStep 承接前一跳：继续推理前同样先经记忆（半启动）。
-func (l *Loop) actionStep(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+func (s *Server) actionStep(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	var p stepPayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
 		return nil, err
@@ -365,15 +361,15 @@ func (l *Loop) actionStep(_ context.Context, env protocol.Envelope, in protocol.
 	if cid == "" {
 		cid = "default"
 	}
-	l.startMemoryRound(env, cid, p.Messages)
+	s.startMemoryRound(env, cid, p.Messages)
 	return map[string]any{"status": "accepted"}, nil
 }
 
 // actionResume 是完全启动的唯一入口：仅接受来自记忆服务的 resume。
 // 记忆组装好的上下文到达后，才调用 LLM API（见 DESIGN.md §3 记忆往返）。
-func (l *Loop) actionResume(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	if env.From != l.cfg.Memory {
-		return nil, fmt.Errorf("resume 仅接受来自记忆服务（%s）的调用，拒绝来源 %q", l.cfg.Memory, env.From)
+func (s *Server) actionResume(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	if env.From != s.cfg.Memory {
+		return nil, fmt.Errorf("resume 仅接受来自记忆服务（%s）的调用，拒绝来源 %q", s.cfg.Memory, env.From)
 	}
 	var p protocol.ResumePayload
 	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
@@ -392,5 +388,5 @@ func (l *Loop) actionResume(ctx context.Context, env protocol.Envelope, in proto
 	if cid == "" {
 		cid = "default"
 	}
-	return l.inferStep(ctx, taskEnv, cid, tc.Messages)
+	return s.inferStep(ctx, taskEnv, cid, tc.Messages)
 }

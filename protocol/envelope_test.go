@@ -9,13 +9,13 @@ import (
 // TestEnvelopeRoundTrip 验证信封 + 复杂 payload 的编解码往返。
 func TestEnvelopeRoundTrip(t *testing.T) {
 	reg := RegisterPayload{
-		Name:        "agentloop",
+		Name:        "reasoner",
 		Addr:        "ws://127.0.0.1:9101/ws",
 		Description: "测试用名片",
 		Provides:    []Provide{{Action: "echo", Input: "任意", Output: "原样返回"}},
 		Settings:    []Setting{{Key: "conn.default_ttl", Default: "5m"}},
 	}
-	env, err := NewEnvelope(TypeRegister, "agentloop", "settings-center", "trace-1", reg)
+	env, err := NewEnvelope(TypeRegister, "reasoner", "settings-center", "trace-1", reg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	if got.ID == "" || got.Trace != "trace-1" {
 		t.Fatalf("id/trace 不符: id=%q trace=%q", got.ID, got.Trace)
 	}
-	if got.Type != TypeRegister || got.From != "agentloop" || got.To != "settings-center" {
+	if got.Type != TypeRegister || got.From != "reasoner" || got.To != "settings-center" {
 		t.Fatalf("信封字段不符: %+v", got)
 	}
 
@@ -43,7 +43,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	if err := got.DecodePayload(&reg2); err != nil {
 		t.Fatal(err)
 	}
-	if reg2.Name != "agentloop" || reg2.Addr != "ws://127.0.0.1:9101/ws" {
+	if reg2.Name != "reasoner" || reg2.Addr != "ws://127.0.0.1:9101/ws" {
 		t.Fatalf("payload 不符: %+v", reg2)
 	}
 	if len(reg2.Provides) != 1 || reg2.Provides[0].Action != "echo" {
@@ -60,7 +60,7 @@ func TestResponseDataPassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := NewEnvelope(TypeResponse, "settings-center", "agentloop", "trace-9", ResponsePayload{OK: true, Data: data})
+	env, err := NewEnvelope(TypeResponse, "settings-center", "reasoner", "trace-9", ResponsePayload{OK: true, Data: data})
 	if err != nil {
 		t.Fatal(err)
 	}

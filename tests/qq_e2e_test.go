@@ -1,7 +1,7 @@
 package tests
 
-// M4 e2e：真进程全链——stub NapCat → qq → images → center → agentloop → memory → 假 DeepSeek → 回发 QQ。
-// 场景：主人私聊发图 + 文本 → 最终回复经 send_msg 发回；图片经 images 存取、agentloop 取图内联给模型。
+// M4 e2e：真进程全链——stub NapCat → qq → images → center → reasoner → memory → 假 DeepSeek → 回发 QQ。
+// 场景：主人私聊发图 + 文本 → 最终回复经 send_msg 发回；图片经 images 存取、reasoner 取图内联给模型。
 
 import (
 	"bytes"
@@ -157,7 +157,7 @@ func TestQQFullChainE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
 	memBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/memory")
 	imgBin := buildServiceNamed(t, "github.com/QAQ-awa-QAQ/sump/images", "sump-images")
-	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/agentloop")
+	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
 	qqBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/qq")
 
 	fakeLLM := startFakeDeepSeek(t, false) // 纯文本模式：一次调用即回复
@@ -228,7 +228,7 @@ func TestQQFullChainE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = obs.Close() })
-	for _, name := range []string{"memory", "images", "agentloop", "qq"} {
+	for _, name := range []string{"memory", "images", "reasoner", "qq"} {
 		waitRosterHas(t, obs, name, 60*time.Second)
 	}
 

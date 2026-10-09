@@ -1,6 +1,6 @@
 package tests
 
-// stubMemory 是记忆服务替身（完全启动链）：recall → 注入固定记忆块 → 以 resume 发回 agentloop；
+// stubMemory 是记忆服务替身（完全启动链）：recall → 注入固定记忆块 → 以 resume 发回 reasoner；
 // store → 记录（供断言）。
 
 import (
@@ -21,7 +21,7 @@ type stubMemory struct {
 	srv *http.Server
 
 	mu       sync.Mutex
-	agentURL string // resume 的投递目标（agentloop 启动后设置）
+	agentURL string // resume 的投递目标（reasoner 启动后设置）
 	stores   []protocol.StorePayload
 }
 
@@ -38,7 +38,7 @@ func startStubMemory(t *testing.T, center *stubCenter) *stubMemory {
 	go func() { _ = m.srv.Serve(ln) }()
 	t.Cleanup(func() { _ = m.srv.Close() })
 
-	// 把记忆名片放进中心（agentloop 从 roster 解析它的地址）。
+	// 把记忆名片放进中心（reasoner 从 roster 解析它的地址）。
 	center.mu.Lock()
 	center.cards["memory"] = protocol.ServiceCard{
 		Name:        "memory",
@@ -129,7 +129,7 @@ func (m *stubMemory) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// fireResume 把组装好的上下文发给 agentloop（from=memory → 触发完全启动）。
+// fireResume 把组装好的上下文发给 reasoner（from=memory → 触发完全启动）。
 func (m *stubMemory) fireResume(trace string, raw msgpack.RawMessage) {
 	m.mu.Lock()
 	url := m.agentURL
@@ -143,11 +143,11 @@ func (m *stubMemory) fireResume(trace string, raw msgpack.RawMessage) {
 			return
 		}
 		defer c.Close()
-		env, err := protocol.NewEnvelope(protocol.TypeJump, "memory", "agentloop", trace, protocol.JumpPayload{Action: "resume", Input: raw})
+		env, err := protocol.NewEnvelope(protocol.TypeJump, "memory", "reasoner", trace, protocol.JumpPayload{Action: "resume", Input: raw})
 		if err != nil {
 			return
 		}
-		env.Boss = "agentloop"
+		env.Boss = "reasoner"
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_, _ = c.Call(ctx, env)

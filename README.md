@@ -23,7 +23,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 ## 本地运行
 
 ```powershell
-# 构建并启动五个服务（settings-center :9000 + memory :9201 + images :9401 + qq :9301 + agentloop :9101）
+# 构建并启动五个服务（settings-center :9000 + memory :9201 + images :9401 + qq :9301 + reasoner :9101）
 .\scripts\run-local.ps1
 ```
 
@@ -31,14 +31,14 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - 接 QQ（NapCat 正向 WS，仅私聊）：`.\scripts\run-local.ps1 -Owner 2271917353 -NapCatURL ws://192.168.11.196:3001 -NapCatToken <token>`——连不上会自动重试，不影响其余服务
 - 记忆/图片数据落在 `data/`（`memory.db` / `images.db` / `images/`，不入库）
 - 接入真 LLM：`$env:DEEPSEEK_API_KEY='sk-...'; .\scripts\run-local.ps1`（或显式 `-LlmKey/-LlmModel/-LlmBase`）
-- 真 LLM 冒烟测试：`$env:SUMP_LIVE_LLM='1'; $env:DEEPSEEK_API_KEY='sk-...'; cd agentloop; go test ./tests/ -run TestLiveDeepSeek -v`（平时自动跳过）
+- 真 LLM 冒烟测试：`$env:SUMP_LIVE_LLM='1'; $env:DEEPSEEK_API_KEY='sk-...'; cd reasoner; go test ./tests/ -run TestLiveDeepSeek -v`（平时自动跳过）
 - `Ctrl+C` 停止（脚本会清理全部子进程）
 - 跨服务端到端测试：`cd tests; go test ./... -count=1`
 
 ## 进度
 
 - [x] 重构设计（[DESIGN.md](./DESIGN.md)）
-- [x] 第一批骨架：agentloop + 设置中心（注册 / 名册 / 跨服务跳转 / 自我跳转）
+- [x] 第一批骨架：reasoner + 设置中心（注册 / 名册 / 跨服务跳转 / 自我跳转）
 - [x] 单步推理链（M2）：LLM 决策 / 工具跳转 / 自跳 step / deliver 直达 boss——含假 LLM 端到端与真 DeepSeek 冒烟
 - [x] 记忆服务（M3）：会话历史 + 上下文组装；llm 经记忆激活的“完全启动”链（recall → resume）——含全链测试与真进程端到端
 - [x] QQ 私聊接入 + 图片服务（M4）：NapCat/OneBot 11 → 任务链 → deliver 回发；图片存入 images、推理前取图内联（含全链真进程 e2e）

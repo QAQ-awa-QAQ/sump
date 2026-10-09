@@ -16,11 +16,11 @@ import (
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 )
 
-// TestHelloWeb 是 M1 的验收：两个真实进程（settings-center + agentloop）
+// TestHelloWeb 是 M1 的验收：两个真实进程（settings-center + reasoner）
 // 跑通最小闭环——注册 / 名册 / 跨服务跳转 / 自我跳转。
 func TestHelloWeb(t *testing.T) {
 	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
-	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/agentloop")
+	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
 
 	scPort := freePort(t)
 	alPort := freePort(t)
@@ -42,21 +42,21 @@ func TestHelloWeb(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = obs.Close() })
 
-	// 断言 a：agentloop 注册成功，名册可见（含设置中心自身）。
-	waitRosterHas(t, obs, "agentloop", 60*time.Second)
+	// 断言 a：reasoner 注册成功，名册可见（含设置中心自身）。
+	waitRosterHas(t, obs, "reasoner", 60*time.Second)
 	waitRosterHas(t, obs, "settings-center", 10*time.Second)
 
-	// 观察者连 agentloop，做跳转断言。
+	// 观察者连 reasoner，做跳转断言。
 	ac, err := protocol.Dial(agentURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ac.Close() })
 
-	// 断言 b：agentloop → settings-center 跳转（ping → pong）。
+	// 断言 b：reasoner → settings-center 跳转（ping → pong）。
 	ctxB, cancelB := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelB()
-	rp := callJump(t, ac, "agentloop", "debug_jump", map[string]any{
+	rp := callJump(t, ac, "reasoner", "debug_jump", map[string]any{
 		"to":     "settings-center",
 		"action": "ping",
 	}, ctxB)
@@ -77,7 +77,7 @@ func TestHelloWeb(t *testing.T) {
 	// 断言 c：自我跳转——循环地基。
 	ctxC, cancelC := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelC()
-	rp2 := callJump(t, ac, "agentloop", "debug_jump", map[string]any{
+	rp2 := callJump(t, ac, "reasoner", "debug_jump", map[string]any{
 		"to":     "self",
 		"action": "echo",
 		"input":  map[string]any{"msg": "hello-web"},
@@ -94,7 +94,7 @@ func TestHelloWeb(t *testing.T) {
 	if err := protocol.DecodeRaw(rp2.Data, &echo); err != nil {
 		t.Fatal(err)
 	}
-	if echo.Who != "agentloop" || echo.Echo.Msg != "hello-web" {
+	if echo.Who != "reasoner" || echo.Echo.Msg != "hello-web" {
 		t.Fatalf("自我跳转结果不符: %+v", echo)
 	}
 }

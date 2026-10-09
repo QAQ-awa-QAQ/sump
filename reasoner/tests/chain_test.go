@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QAQ-awa-QAQ/sump/agentloop/llm"
-	"github.com/QAQ-awa-QAQ/sump/agentloop/loop"
 	"github.com/QAQ-awa-QAQ/sump/protocol"
+	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
+	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
 )
 
 // stubBoss 是“老板”的最小替身：实现约定的 deliver 动作，收到结果放进 channel。
@@ -38,7 +38,7 @@ func startStubBoss(t *testing.T, center *stubCenter) *stubBoss {
 	go func() { _ = b.srv.Serve(ln) }()
 	t.Cleanup(func() { _ = b.srv.Close() })
 
-	// 把 boss 名片放进中心（agentloop 从 roster 解析它的地址）。
+	// 把 boss 名片放进中心（reasoner 从 roster 解析它的地址）。
 	center.mu.Lock()
 	center.cards["stub-boss"] = protocol.ServiceCard{
 		Name:        "stub-boss",
@@ -99,14 +99,14 @@ func TestInferChain(t *testing.T) {
 	fake := &llm.Fake{Replies: []llm.Message{
 		{Role: "assistant", ToolCalls: []llm.ToolCall{{
 			ID: "call_1", Type: "function",
-			Function: llm.FunctionCall{Name: "agentloop__echo", Arguments: `{"msg":"hi"}`},
+			Function: llm.FunctionCall{Name: "reasoner__echo", Arguments: `{"msg":"hi"}`},
 		}}},
 		{Role: "assistant", Content: "最终答复：你好！"},
 	}}
 
 	logger := log.New(os.Stdout, "[chain-test] ", log.LstdFlags)
-	l := loop.New(loop.Config{
-		Name:              "agentloop",
+	s := server.New(server.Config{
+		Name:              "reasoner",
 		Listen:            "127.0.0.1:0",
 		Center:            sc.URL(),
 		HeartbeatInterval: 100 * time.Millisecond,
@@ -115,20 +115,20 @@ func TestInferChain(t *testing.T) {
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := l.Start(ctx); err != nil {
+	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(l.Shutdown)
-	mem.setAgentURL(l.WsURL())
+	t.Cleanup(s.Shutdown)
+	mem.setAgentURL(s.WsURL())
 
-	c := dialAgent(t, l)
+	c := dialAgent(t, s)
 
 	// 发起链：boss=stub-boss——“结果交付对象”。
 	raw, err := protocol.EncodePayload(map[string]any{"text": "你好"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := protocol.NewEnvelope(protocol.TypeJump, "test", "agentloop", "", protocol.JumpPayload{Action: "user_message", Input: raw})
+	req, err := protocol.NewEnvelope(protocol.TypeJump, "test", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,12 +165,12 @@ func TestInferChain(t *testing.T) {
 	first := fake.Requests[0]
 	foundEchoTool := false
 	for _, tool := range first.Tools {
-		if tool.Function.Name == "agentloop__echo" {
+		if tool.Function.Name == "reasoner__echo" {
 			foundEchoTool = true
 		}
 	}
 	if !foundEchoTool {
-		t.Fatalf("第一轮请求应包含 agentloop__echo 工具: %+v", first.Tools)
+		t.Fatalf("第一轮请求应包含 reasoner__echo 工具: %+v", first.Tools)
 	}
 	// 完全启动链：请求必须携带记忆块（由 resume 注入）。
 	if !hasMemoryBlock(first.Messages) {
@@ -236,11 +236,11 @@ func waitStores(t *testing.T, m *stubMemory, n int, timeout time.Duration) []pro
 // TestResumeRejected 验证“完全启动”入口只接受 from=memory——其他来源一律拒绝。
 func TestResumeRejected(t *testing.T) {
 	sc := startStubCenter(t)
-	l := startAgent(t, sc.URL())
+	s := startAgent(t, sc.URL())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := dialAgent(t, l)
+	c := dialAgent(t, s)
 
 	rp := jump(t, c, "resume", protocol.ResumePayload{Context: protocol.TaskContext{
 		Messages: []llm.Message{{Role: "user", Content: "x"}},

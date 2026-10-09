@@ -94,6 +94,15 @@ type StorePayload struct {
 	Content        string `msgpack:"content"`
 }
 
+// ---------- 任务链入口 ----------
+
+// UserMessagePayload 是 user_message（链入口）的 payload：用户消息文本 + 图片引用。
+type UserMessagePayload struct {
+	Text           string   `msgpack:"text"`
+	ConversationID string   `msgpack:"conversation_id,omitempty"`
+	Images         []string `msgpack:"images,omitempty"` // 图片引用（images 服务中的 id）
+}
+
 // ---------- 交付与图片 ----------
 
 // DeliverPayload 是 deliver（链终点 → boss）的 payload：最终文本 + 会话标识（boss 据此路由回复）。

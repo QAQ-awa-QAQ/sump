@@ -32,7 +32,7 @@ type Config struct {
 	NapCatURL         string        // NapCat 正向 WS 地址
 	NapCatToken       string        // access_token（可选）
 	Owner             string        // 主人 QQ（唯一授权私聊用户；留空则拒绝所有私聊）
-	Agent             string        // 任务跳转目标（agentloop 服务名，默认 agentloop）
+	Agent             string        // 任务跳转目标（reasoner 服务名，默认 reasoner）
 	Images            string        // 图片服务名（默认 images）
 }
 
@@ -64,7 +64,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 		cfg.HeartbeatInterval = 15 * time.Second
 	}
 	if cfg.Agent == "" {
-		cfg.Agent = "agentloop"
+		cfg.Agent = "reasoner"
 	}
 	if cfg.Images == "" {
 		cfg.Images = "images"
@@ -395,10 +395,7 @@ func (s *Server) onQQEvent(ev napcat.Event) {
 	}
 
 	cid := "qq:private:" + uid
-	payload := map[string]any{"text": text, "conversation_id": cid}
-	if len(ids) > 0 {
-		payload["images"] = ids
-	}
+	payload := protocol.UserMessagePayload{Text: text, ConversationID: cid, Images: ids}
 	if err := s.callAgent("user_message", payload); err != nil {
 		s.logger.Printf("user_message 未受理: %v", err)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -430,7 +427,7 @@ func (s *Server) saveImage(url string) (string, error) {
 	return res.ID, nil
 }
 
-// callAgent 向 agentloop 发 user_message（等受理回执；boss=本服务）。
+// callAgent 向 reasoner 发 user_message（等受理回执；boss=本服务）。
 func (s *Server) callAgent(action string, payload any) error {
 	targetName, targetAddr, err := s.resolve(s.cfg.Agent)
 	if err != nil {
