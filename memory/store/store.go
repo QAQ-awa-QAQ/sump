@@ -4,6 +4,8 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"os"
+	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -18,6 +20,11 @@ type Store struct {
 
 // Open 打开（或创建）数据库并建表。
 func Open(path string) (*Store, error) {
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err

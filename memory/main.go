@@ -18,7 +18,7 @@ func main() {
 	name := flag.String("name", "memory", "服务名")
 	addr := flag.String("addr", "127.0.0.1:9201", "监听地址（host:port）")
 	center := flag.String("center", "ws://127.0.0.1:9000/ws", "设置中心 WS 地址")
-	dbPath := flag.String("db", "memory.db", "SQLite 数据文件路径")
+	dbPath := flag.String("db", "data/memory.db", "SQLite 数据文件路径")
 	history := flag.Int("history", 12, "recall 返回的最近消息条数")
 	flag.Parse()
 

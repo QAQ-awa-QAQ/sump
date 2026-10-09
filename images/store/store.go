@@ -25,6 +25,11 @@ type Store struct {
 
 // Open 打开（或创建）图库：元数据在 dbPath，二进制落在 dir。
 func Open(dbPath, dir string) (*Store, error) {
+	if parent := filepath.Dir(dbPath); parent != "" {
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			return nil, err
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
