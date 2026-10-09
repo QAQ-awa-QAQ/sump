@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 // ErrConnClosed 表示连接已关闭。
 var ErrConnClosed = errors.New("protocol: connection closed")
+
+// dialTimeout 是握手上限：死服务快速失败，避免默认 45s 的长时间挂起。
+const dialTimeout = 5 * time.Second
 
 // Client 是一条 WS 客户端连接：请求-响应配对 + 事件回调。
 //
@@ -31,7 +35,14 @@ type Client struct {
 
 // Dial 建立到 addr 的连接并启动读循环；onEvent 可为 nil。
 func Dial(addr string, onEvent func(Envelope)) (*Client, error) {
-	conn, _, err := websocket.DefaultDialer.Dial(addr, nil)
+	return DialContext(context.Background(), addr, onEvent)
+}
+
+// DialContext 同 Dial，但拨号受 ctx 约束（取消 / 超时立即返回，可中断等待）。
+func DialContext(ctx context.Context, addr string, onEvent func(Envelope)) (*Client, error) {
+	d := *websocket.DefaultDialer
+	d.HandshakeTimeout = dialTimeout
+	conn, _, err := d.DialContext(ctx, addr, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +100,12 @@ func (c *Client) Call(ctx context.Context, env Envelope) (Envelope, error) {
 func (c *Client) Close() error {
 	c.close()
 	return nil
+}
+
+// Done 返回连接关闭信号（读循环结束或主动关闭时关闭）。
+// 供上层监视连接健康（如断线自愈）。
+func (c *Client) Done() <-chan struct{} {
+	return c.closed
 }
 
 func (c *Client) readLoop() {

@@ -22,6 +22,7 @@ type RegisterPayload struct {
 	Description string    `msgpack:"description,omitempty"`
 	Provides    []Provide `msgpack:"provides,omitempty"`
 	Settings    []Setting `msgpack:"settings,omitempty"`
+	HeartbeatMS int64     `msgpack:"heartbeat_ms,omitempty"` // 心跳间隔（毫秒；0 = 未声明，中心用默认）
 }
 
 // ServiceCard 是 roster 中一个服务的公开部分。
@@ -30,6 +31,7 @@ type ServiceCard struct {
 	Addr        string    `msgpack:"addr"`
 	Description string    `msgpack:"description,omitempty"`
 	Provides    []Provide `msgpack:"provides,omitempty"`
+	HeartbeatMS int64     `msgpack:"heartbeat_ms,omitempty"` // 心跳间隔（毫秒；离线判定用）
 }
 
 // Card 返回名片去掉私有部分（settings）后的公开视图。
@@ -39,6 +41,7 @@ func (r RegisterPayload) Card() ServiceCard {
 		Addr:        r.Addr,
 		Description: r.Description,
 		Provides:    r.Provides,
+		HeartbeatMS: r.HeartbeatMS,
 	}
 }
 

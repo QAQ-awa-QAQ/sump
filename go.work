@@ -2,6 +2,7 @@ go 1.26
 
 use (
 	./protocol
+	./service
 	./reasoner
 	./memory
 	./images
