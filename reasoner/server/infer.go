@@ -130,19 +130,50 @@ func (s *Server) runToolCall(ctx context.Context, env protocol.Envelope, call ll
 	return rawToJSONText(data), nil
 }
 
-// runToolCalls 并行执行多个工具调用，结果按调用顺序返回。
-func (s *Server) runToolCalls(ctx context.Context, env protocol.Envelope, calls []llm.ToolCall) []llm.Message {
+// runToolCalls 并发执行多个工具调用，结果按调用顺序返回。
+// 并发受会话级信号量约束（config.ToolConcurrency；负值 = 不限制）；
+// 同一服务的多个调用可以并发进行，不做去重。
+func (s *Server) runToolCalls(ctx context.Context, env protocol.Envelope, conversationID string, calls []llm.ToolCall) []llm.Message {
 	results := make([]llm.Message, len(calls))
+	sem := s.toolSem(conversationID)
 	var wg sync.WaitGroup
 	for i, call := range calls {
 		wg.Add(1)
 		go func(i int, call llm.ToolCall) {
 			defer wg.Done()
+			if sem != nil {
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					results[i] = llm.Message{Role: "tool", ToolCallID: call.ID, Content: "错误: 等待并发额度时上下文已结束"}
+					return
+				}
+			}
 			results[i] = s.executeToolCall(ctx, env, call)
 		}(i, call)
 	}
 	wg.Wait()
 	return results
+}
+
+// toolSem 返回某会话的工具并发信号量（nil = 不限制）。信号量懒创建、按会话复用。
+func (s *Server) toolSem(conversationID string) chan struct{} {
+	n := s.cfg.ToolConcurrency
+	if n < 0 {
+		return nil
+	}
+	if n == 0 {
+		n = 10
+	}
+	s.semsMu.Lock()
+	defer s.semsMu.Unlock()
+	sem := s.sems[conversationID]
+	if sem == nil {
+		sem = make(chan struct{}, n)
+		s.sems[conversationID] = sem
+	}
+	return sem
 }
 
 // resolveImages 取“最近一条带图消息”的图片数据（id → data URL），供 LLM 内联。
@@ -241,8 +272,8 @@ func (s *Server) inferStep(ctx context.Context, env protocol.Envelope, conversat
 
 	switch {
 	case len(resp.ToolCalls) > 0:
-		// 并行执行工具（短响应），再自跳继续推理（下一轮先经记忆）——发出即完。
-		results := s.runToolCalls(ctx, env, resp.ToolCalls)
+		// 并发执行工具（短响应；受会话级并发上限约束），再自跳继续推理（下一轮先经记忆）——发出即完。
+		results := s.runToolCalls(ctx, env, conversationID, resp.ToolCalls)
 		messages = append(messages, llm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls})
 		messages = append(messages, results...)
 		s.fireStep(env, conversationID, messages)

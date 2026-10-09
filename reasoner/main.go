@@ -22,6 +22,7 @@ func main() {
 	llmBase := flag.String("llm-base", "https://api.deepseek.com", "LLM API 地址（OpenAI 兼容）")
 	llmKey := flag.String("llm-key", os.Getenv("DEEPSEEK_API_KEY"), "LLM API Key（默认取环境变量 DEEPSEEK_API_KEY）")
 	llmModel := flag.String("llm-model", "deepseek-chat", "LLM 模型名")
+	toolConc := flag.Int("tool-concurrency", 10, "单会话工具并发上限（-1 = 不限制）")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "[reasoner] ", log.LstdFlags|log.Lmicroseconds)
@@ -30,7 +31,7 @@ func main() {
 	}
 	llmClient := llm.NewDeepSeekClient(*llmBase, *llmKey, *llmModel)
 
-	s := server.New(server.Config{Name: *name, Listen: *addr, Center: *center, Memory: *memorySvc, Images: *imagesSvc, LLM: llmClient}, logger)
+	s := server.New(server.Config{Name: *name, Listen: *addr, Center: *center, Memory: *memorySvc, Images: *imagesSvc, LLM: llmClient, ToolConcurrency: *toolConc}, logger)
 	if err := s.Start(context.Background()); err != nil {
 		logger.Fatalf("启动失败: %v", err)
 	}

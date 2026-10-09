@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -26,6 +27,7 @@ type Config struct {
 	Memory            string        // 记忆服务名（默认 memory——“完全启动”链的另一半）
 	Images            string        // 图片服务名（默认 images——推理前取图内联）
 	LLM               llm.Client    // 单步推理的 LLM 客户端（user_message / step 必需；nil 时相关动作报错）
+	ToolConcurrency   int           // 单会话工具并发上限（默认 10；负值 = 不限制；同一服务可并发重复）
 }
 
 // Server 是 reasoner 服务实例（服务骨架 + 推理配置）。
@@ -34,6 +36,9 @@ type Server struct {
 
 	cfg    Config
 	logger *log.Logger
+
+	semsMu sync.Mutex               // 工具并发信号量表锁
+	sems   map[string]chan struct{} // 会话 → 工具并发信号量（懒创建）
 }
 
 // New 创建实例并注册动作。
@@ -44,7 +49,10 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.Images == "" {
 		cfg.Images = "images"
 	}
-	s := &Server{cfg: cfg, logger: logger}
+	if cfg.ToolConcurrency == 0 {
+		cfg.ToolConcurrency = 10
+	}
+	s := &Server{cfg: cfg, logger: logger, sems: map[string]chan struct{}{}}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Listen:            cfg.Listen,
