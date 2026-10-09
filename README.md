@@ -29,7 +29,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 
 - 自定义地址：`.\scripts\run-local.ps1 -CenterAddr 127.0.0.1:9000 -MemoryAddr 127.0.0.1:9201 -ImageAddr 127.0.0.1:9401 -QQAddr 127.0.0.1:9301 -AgentAddr 127.0.0.1:9101`
 - 接 QQ（NapCat 正向 WS，仅私聊）：`.\scripts\run-local.ps1 -Owner 2271917353 -NapCatURL ws://192.168.11.196:3001 -NapCatToken <token>`——连不上会自动重试，不影响其余服务
-- 记忆/图片数据落在 `data/`（`memory.db` / `images.db` / `images/`，不入库）
+- 数据落在 `data/`（`memory.db` / `images.db` / `images/` / `settings.json`，不入库）
 - 接入真 LLM：`$env:DEEPSEEK_API_KEY='sk-...'; .\scripts\run-local.ps1`（或显式 `-LlmKey/-LlmModel/-LlmBase`）
 - 真 LLM 冒烟测试：`$env:SUMP_LIVE_LLM='1'; $env:DEEPSEEK_API_KEY='sk-...'; cd reasoner; go test ./tests/ -run TestLiveDeepSeek -v`（平时自动跳过）
 - `Ctrl+C` 停止（脚本会清理全部子进程）
@@ -42,6 +42,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - [x] 单步推理链（M2）：LLM 决策 / 工具跳转 / 自跳 step / deliver 直达 boss——含假 LLM 端到端与真 DeepSeek 冒烟
 - [x] 记忆服务（M3）：会话历史 + 上下文组装；llm 经记忆激活的“完全启动”链（recall → resume）——含全链测试与真进程端到端
 - [x] QQ 私聊接入 + 图片服务（M4）：NapCat/OneBot 11 → 任务链 → deliver 回发；图片存入 images、推理前取图内联（含全链真进程 e2e）
+- [x] 设置存取（设置中心）：服务声明的可设置项可查询 / 覆盖 / 重置，覆盖值落盘 `data/settings.json`（下发到服务待做）
 - [ ] 下一步：群聊（@ 必回 / 自主插话）、审批链路
 
 ## 文档
@@ -49,3 +50,4 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 | 文档 | 内容 |
 | ---- | ---- |
 | [DESIGN.md](./DESIGN.md) | 重构设计：背景 / 架构 / 目录约定 / 实施路线 / 待决问题 |
+| [SPEC.md](./SPEC.md) | 服务规范（草案）：写一个新服务要满足什么（独立性 / 最小实现 / 动作词汇 / 工具暴露 / 兼容规则 / 待定事项） |
