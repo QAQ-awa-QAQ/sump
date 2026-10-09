@@ -97,7 +97,7 @@ func findSetting(t *testing.T, res protocol.SettingsResult, service, key string)
 
 // TestSettingsFlow 覆盖：声明默认值 → 查询 → 写入覆盖 → 过滤查询 → 校验 → 重置。
 func TestSettingsFlow(t *testing.T) {
-	s, err := server.Start("127.0.0.1:0", "", newLogger())
+	s, err := server.Start(server.Config{Addr: "127.0.0.1:0"}, newLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestSettingsFlow(t *testing.T) {
 func TestSettingsPersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 
-	s1, err := server.Start("127.0.0.1:0", path, newLogger())
+	s1, err := server.Start(server.Config{Addr: "127.0.0.1:0", SettingsPath: path}, newLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestSettingsPersistence(t *testing.T) {
 	}
 
 	// 重启（同一文件）：覆盖值应被载入；只声明 k1 → k2 的痕迹应被清除
-	s2, err := server.Start("127.0.0.1:0", path, newLogger())
+	s2, err := server.Start(server.Config{Addr: "127.0.0.1:0", SettingsPath: path}, newLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

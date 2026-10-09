@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -13,13 +14,24 @@ import (
 	"github.com/QAQ-awa-QAQ/sump/settings-center/hub"
 )
 
+// Config 是设置中心的启动配置。
+type Config struct {
+	Addr         string        // 监听地址（host:port；":0" 可随机端口）
+	SettingsPath string        // 设置覆盖值文件路径（空 = 不落盘）
+	Heartbeat    time.Duration // 心跳间隔预期（默认 15s；服务未声明心跳时用于离线判定）
+	Sweep        time.Duration // 离线扫描间隔（默认 5s）
+}
+
 // Server 是设置中心服务实例。
 type Server struct {
+	cfg      Config
 	hub      *hub.Hub
 	settings *hub.Settings
 	httpSrv  *http.Server
 	ln       net.Listener
 	logger   *log.Logger
+
+	done chan struct{} // Shutdown 时关闭（停止离线扫描）
 }
 
 var upgrader = websocket.Upgrader{
@@ -27,15 +39,20 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(*http.Request) bool { return true },
 }
 
-// Start 在 addr 上启动服务（非阻塞）；addr 用 ":0" 可随机端口。
-// settingsPath 是设置覆盖值文件路径（空 = 不落盘）。
-func Start(addr, settingsPath string, logger *log.Logger) (*Server, error) {
-	ln, err := net.Listen("tcp", addr)
+// Start 启动设置中心（非阻塞）。
+func Start(cfg Config, logger *log.Logger) (*Server, error) {
+	if cfg.Heartbeat <= 0 {
+		cfg.Heartbeat = 15 * time.Second
+	}
+	if cfg.Sweep <= 0 {
+		cfg.Sweep = 5 * time.Second
+	}
+	ln, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {
 		return nil, err
 	}
 	h := hub.New(logger)
-	st, err := hub.NewSettings(settingsPath, logger)
+	st, err := hub.NewSettings(cfg.SettingsPath, logger)
 	if err != nil {
 		_ = ln.Close()
 		return nil, err
@@ -49,7 +66,7 @@ func Start(addr, settingsPath string, logger *log.Logger) (*Server, error) {
 			{Action: "roster", Output: "最新全量服务清单（DNS 式拉取）"},
 		},
 	})
-	s := &Server{hub: h, settings: st, ln: ln, logger: logger}
+	s := &Server{cfg: cfg, hub: h, settings: st, ln: ln, logger: logger, done: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
 	s.httpSrv = &http.Server{Handler: mux}
@@ -58,15 +75,39 @@ func Start(addr, settingsPath string, logger *log.Logger) (*Server, error) {
 			logger.Printf("服务退出: %v", err)
 		}
 	}()
+	go s.sweepLoop()
 	logger.Printf("settings-center 监听 ws://%s/ws", ln.Addr())
 	return s, nil
+}
+
+// sweepLoop 周期扫描心跳超时：判离线则摘除名册并广播。
+func (s *Server) sweepLoop() {
+	t := time.NewTicker(s.cfg.Sweep)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-t.C:
+			if roster, changed := s.hub.Sweep(time.Now(), s.cfg.Heartbeat); changed {
+				s.hub.Broadcast(roster)
+			}
+		}
+	}
 }
 
 // Addr 返回实际监听地址（host:port）。
 func (s *Server) Addr() string { return s.ln.Addr().String() }
 
 // Shutdown 关闭服务。
-func (s *Server) Shutdown() error { return s.httpSrv.Close() }
+func (s *Server) Shutdown() error {
+	select {
+	case <-s.done:
+	default:
+		close(s.done)
+	}
+	return s.httpSrv.Close()
+}
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
@@ -142,7 +183,7 @@ func (c *serverConn) dispatch(env protocol.Envelope) {
 	case protocol.TypeRegister:
 		c.handleRegister(env)
 	case protocol.TypeHeartbeat:
-		c.hub.NoteSeen(env.From)
+		c.handleHeartbeat(env)
 	case protocol.TypeJump:
 		c.handleJump(env)
 	default:
@@ -162,7 +203,7 @@ func (c *serverConn) handleRegister(env protocol.Envelope) {
 	}
 
 	c.name = reg.Name
-	roster := c.hub.Register(reg.Card(), c)
+	roster, changed := c.hub.Register(reg.Card(), c)
 	c.settings.Declare(reg.Name, reg.Settings)
 
 	data, err := protocol.EncodePayload(roster)
@@ -174,8 +215,28 @@ func (c *serverConn) handleRegister(env protocol.Envelope) {
 	if err == nil {
 		_ = c.Send(resp)
 	}
-	c.hub.Broadcast(roster)
-	c.logger.Printf("注册: %s (%s)", reg.Name, reg.Addr)
+	if changed {
+		c.hub.Broadcast(roster)
+		c.logger.Printf("注册: %s (%s)", reg.Name, reg.Addr)
+	} else {
+		c.logger.Printf("重连: %s（名片无变化，不广播）", reg.Name)
+	}
+}
+
+// handleHeartbeat 处理心跳：bye = 优雅下线（立即摘除）；其余 = 报活（必要时从墓碑复归）。
+func (c *serverConn) handleHeartbeat(env protocol.Envelope) {
+	var hb protocol.HeartbeatPayload
+	_ = env.DecodePayload(&hb)
+	if hb.Status == "bye" {
+		if roster, changed := c.hub.MarkOffline(env.From); changed {
+			c.hub.Broadcast(roster)
+			c.logger.Printf("下线: %s（告别）", env.From)
+		}
+		return
+	}
+	if roster, resurrected := c.hub.NoteSeen(env.From, c); resurrected {
+		c.hub.Broadcast(roster)
+	}
 }
 
 func (c *serverConn) handleJump(env protocol.Envelope) {
