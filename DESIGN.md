@@ -235,6 +235,14 @@ sequenceDiagram
 - `recall`（任务上下文托管）：payload `{context: {conversation_id, messages, boss}}`；受理后异步以 `resume` 回发
 - `resume`（完全启动，memory → llm）：payload 同构 `{context}`；`messages` 为注入记忆后的上下文——llm 仅接受 `from=memory` 的这一跳来调用 LLM API
 - `store`（对话落库）：payload `{conversation_id, role, content}`；幂等（与上一条完全相同则跳过）
+- `remember`（长期记忆写入，**在 provides 里**——自动成为 LLM 工具 `memory__remember`，reasoner 零改动）：payload `{kind, content, priority?, conversation_id?}`
+  - `priority>0` = 核心记忆（每次对话都注入，不看相关性）；同 `kind+content` 已有 active 条目时幂等跳过
+- `forget`（软删，**不在 provides**——不给 LLM 删记忆的按钮；手动 / 直接跳转调用）：payload `{id}`；软删（`status='deleted'`，数据保留可恢复）
+- **recall 组装 v0**：单块 `【记忆】`、替换保位；内部三节（空节省略）——
+  1. `（最近对话）`：会话库最近 N 条（现有逻辑，去重裁剪不变）；
+  2. `（核心记忆）`：`priority>0` 条目（上限 3 条 / 400 字，按优先级 + 新近排序）；
+  3. `（相关记忆）`：bigram 子串打分（相邻二字近似分词；**实测 FTS5 trigram 对 1~2 字中文全打空，故不用**）——top 5 / 800 字，同分按 priority、新近。
+- **检索位置**：v0 为进程内全量打分（个人规模毫秒级）；升级路径：FTS5/bigram 预索引或 embedding 语义召回（独立服务）。
 
 **后续批次（占名）**
 
@@ -284,7 +292,7 @@ sequenceDiagram
 ## 4. 数据与存储
 
 - 各服务**独立建数据库**，数据归属到服务自身；服务之间不共享库表。
-- memory：SQLite（`data/memory.db`）——`messages` 会话消息表 + `memories` 长期记忆表（占位，后续批次）。
+- memory：SQLite（`data/memory.db`）——`messages` 会话消息表 + `memories` 长期记忆表（v0：kind / content / priority / source / conversation_id / status 软删 / 时间戳）；**两表共享同一 DB 句柄**（同进程同库，跨表事务可行）。
 - images：SQLite 元数据（`data/images.db`）+ 图片文件目录（`data/images/`）。
 - settings-center：`data/settings.json`——设置覆盖值（默认值由各服务声明，不落盘）。
 - （细化待定：其余服务存什么、跨服务数据如何流转）
