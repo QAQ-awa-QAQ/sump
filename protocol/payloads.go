@@ -137,3 +137,43 @@ type ImageFetchResult struct {
 	Data string `msgpack:"data"` // base64（不含 data: 前缀）
 	Size int64  `msgpack:"size"`
 }
+
+// ---------- 设置中心：设置存取 ----------
+
+// SettingView 是一个设置项的当前状态（设置中心对外呈现）。
+type SettingView struct {
+	Key        string `msgpack:"key"`
+	Value      string `msgpack:"value"`      // 当前生效值（有覆盖值时为覆盖值，否则为默认值）
+	Default    string `msgpack:"default"`    // 服务注册时声明的默认值
+	Overridden bool   `msgpack:"overridden"` // 是否被设置中心覆盖
+}
+
+// ServiceSettings 是一个服务的设置清单（按声明顺序）。
+type ServiceSettings struct {
+	Service  string        `msgpack:"service"`
+	Settings []SettingView `msgpack:"settings,omitempty"`
+}
+
+// SettingsListPayload 是 list_settings 的输入：可选按服务过滤（服务名）。
+type SettingsListPayload struct {
+	Service string `msgpack:"service,omitempty"`
+}
+
+// SettingsResult 是设置查询 / 变更的输出（list_settings / set_setting / reset_setting）：
+// list 返回全部（或过滤后的）服务；set / reset 返回被改动的那个服务。
+type SettingsResult struct {
+	Services []ServiceSettings `msgpack:"services"`
+}
+
+// SetSettingPayload 是 set_setting 的输入：把某服务的某项设为某值（写覆盖值）。
+type SetSettingPayload struct {
+	Service string `msgpack:"service"`
+	Key     string `msgpack:"key"`
+	Value   string `msgpack:"value"`
+}
+
+// ResetSettingPayload 是 reset_setting 的输入：清除覆盖值，回落服务声明的默认值。
+type ResetSettingPayload struct {
+	Service string `msgpack:"service"`
+	Key     string `msgpack:"key"`
+}

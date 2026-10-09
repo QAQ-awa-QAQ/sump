@@ -76,6 +76,15 @@ func TestAuxPayloadsRoundTrip(t *testing.T) {
 		{"saveResult", ImageSaveResult{ID: "01J", Mime: "image/png", Size: 123}, &ImageSaveResult{}},
 		{"fetch", ImageFetchPayload{ID: "01J"}, &ImageFetchPayload{}},
 		{"fetchResult", ImageFetchResult{ID: "01J", Mime: "image/jpeg", Data: "AA==", Size: 1}, &ImageFetchResult{}},
+		{"settingsList", SettingsListPayload{Service: "svc-a"}, &SettingsListPayload{}},
+		{"setSetting", SetSettingPayload{Service: "svc-a", Key: "k", Value: "v"}, &SetSettingPayload{}},
+		{"resetSetting", ResetSettingPayload{Service: "svc-a", Key: "k"}, &ResetSettingPayload{}},
+		{"settingsResult", SettingsResult{Services: []ServiceSettings{{
+			Service: "svc-a",
+			Settings: []SettingView{{
+				Key: "k", Value: "v", Default: "d", Overridden: true,
+			}},
+		}}}, &SettingsResult{}},
 	}
 	for _, tc := range cases {
 		env, err := NewEnvelope(TypeJump, "a", "b", "trace-1", tc.in)

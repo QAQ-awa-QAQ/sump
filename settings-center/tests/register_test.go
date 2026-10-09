@@ -20,7 +20,7 @@ func newLogger() *log.Logger {
 // TestRegisterAndRosterBroadcast 验证：注册成功、响应带 roster、
 // 新服务加入后 roster 事件广播到已连接服务。
 func TestRegisterAndRosterBroadcast(t *testing.T) {
-	s, err := server.Start("127.0.0.1:0", newLogger())
+	s, err := server.Start("127.0.0.1:0", "", newLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestRegisterAndRosterBroadcast(t *testing.T) {
 
 // TestRosterQuery 验证 DNS 式拉取：服务主动访问设置中心获取最新全量清单。
 func TestRosterQuery(t *testing.T) {
-	s, err := server.Start("127.0.0.1:0", newLogger())
+	s, err := server.Start("127.0.0.1:0", "", newLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

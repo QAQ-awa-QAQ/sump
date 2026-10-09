@@ -15,10 +15,11 @@ import (
 
 // Server 是设置中心服务实例。
 type Server struct {
-	hub     *hub.Hub
-	httpSrv *http.Server
-	ln      net.Listener
-	logger  *log.Logger
+	hub      *hub.Hub
+	settings *hub.Settings
+	httpSrv  *http.Server
+	ln       net.Listener
+	logger   *log.Logger
 }
 
 var upgrader = websocket.Upgrader{
@@ -27,12 +28,18 @@ var upgrader = websocket.Upgrader{
 }
 
 // Start 在 addr 上启动服务（非阻塞）；addr 用 ":0" 可随机端口。
-func Start(addr string, logger *log.Logger) (*Server, error) {
+// settingsPath 是设置覆盖值文件路径（空 = 不落盘）。
+func Start(addr, settingsPath string, logger *log.Logger) (*Server, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
 	h := hub.New(logger)
+	st, err := hub.NewSettings(settingsPath, logger)
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
 	h.PutSelf(protocol.ServiceCard{
 		Name:        "settings-center",
 		Addr:        "ws://" + ln.Addr().String() + "/ws",
@@ -42,7 +49,7 @@ func Start(addr string, logger *log.Logger) (*Server, error) {
 			{Action: "roster", Output: "最新全量服务清单（DNS 式拉取）"},
 		},
 	})
-	s := &Server{hub: h, ln: ln, logger: logger}
+	s := &Server{hub: h, settings: st, ln: ln, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
 	s.httpSrv = &http.Server{Handler: mux}
@@ -67,15 +74,16 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("升级失败: %v", err)
 		return
 	}
-	sc := &serverConn{ws: ws, hub: s.hub, logger: s.logger}
+	sc := &serverConn{ws: ws, hub: s.hub, settings: s.settings, logger: s.logger}
 	go sc.serve()
 }
 
 // serverConn 是一条已升级的服务连接。
 type serverConn struct {
-	ws     *websocket.Conn
-	hub    *hub.Hub
-	logger *log.Logger
+	ws       *websocket.Conn
+	hub      *hub.Hub
+	settings *hub.Settings
+	logger   *log.Logger
 
 	mu     sync.Mutex // 写锁（gorilla 不支持并发写）
 	name   string     // 注册后的服务名（未注册为空）
@@ -155,6 +163,7 @@ func (c *serverConn) handleRegister(env protocol.Envelope) {
 
 	c.name = reg.Name
 	roster := c.hub.Register(reg.Card(), c)
+	c.settings.Declare(reg.Name, reg.Settings)
 
 	data, err := protocol.EncodePayload(roster)
 	if err != nil {
@@ -181,9 +190,57 @@ func (c *serverConn) handleJump(env protocol.Envelope) {
 	case "roster":
 		// DNS 式拉取：返回最新全量清单（推送丢失 / 服务重启后自愈用）
 		c.replyData(env, c.hub.Snapshot())
+	case "list_settings":
+		c.handleListSettings(env, jp)
+	case "set_setting":
+		c.handleSetSetting(env, jp)
+	case "reset_setting":
+		c.handleResetSetting(env, jp)
 	default:
 		c.replyError(env, "unknown action: "+jp.Action)
 	}
+}
+
+// handleListSettings 返回设置清单（可选按服务过滤）。
+func (c *serverConn) handleListSettings(env protocol.Envelope, jp protocol.JumpPayload) {
+	var p protocol.SettingsListPayload
+	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
+		c.replyError(env, "bad list_settings payload")
+		return
+	}
+	c.replyData(env, protocol.SettingsResult{Services: c.settings.List(p.Service)})
+}
+
+// handleSetSetting 写覆盖值（服务与设置项都必须已被声明）。
+func (c *serverConn) handleSetSetting(env protocol.Envelope, jp protocol.JumpPayload) {
+	var p protocol.SetSettingPayload
+	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
+		c.replyError(env, "bad set_setting payload")
+		return
+	}
+	ss, err := c.settings.Set(p.Service, p.Key, p.Value)
+	if err != nil {
+		c.replyError(env, err.Error())
+		return
+	}
+	c.logger.Printf("设置变更: %s.%s = %q", p.Service, p.Key, p.Value)
+	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
+}
+
+// handleResetSetting 清除覆盖值，回落默认值。
+func (c *serverConn) handleResetSetting(env protocol.Envelope, jp protocol.JumpPayload) {
+	var p protocol.ResetSettingPayload
+	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
+		c.replyError(env, "bad reset_setting payload")
+		return
+	}
+	ss, err := c.settings.Reset(p.Service, p.Key)
+	if err != nil {
+		c.replyError(env, err.Error())
+		return
+	}
+	c.logger.Printf("设置重置: %s.%s → 默认值", p.Service, p.Key)
+	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
 }
 
 // replyData 构造并发送一个成功响应（data 为任意可编码值）。
