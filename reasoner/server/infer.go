@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 
@@ -120,15 +119,11 @@ func (s *Server) runToolCall(ctx context.Context, env protocol.Envelope, call ll
 	if !ok {
 		return "", fmt.Errorf("工具名无效: %s", call.Function.Name)
 	}
-	targetName, targetAddr, err := s.resolve(svc)
-	if err != nil {
-		return "", err
-	}
 	rawIn, err := argsToRaw(call.Function.Arguments)
 	if err != nil {
 		return "", err
 	}
-	data, err := s.callService(ctx, targetName, targetAddr, action, rawIn, env.Trace)
+	data, err := s.Call(ctx, svc, action, rawIn, env.Trace, "")
 	if err != nil {
 		return "", err
 	}
@@ -163,8 +158,7 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 	if len(ids) == 0 {
 		return nil
 	}
-	targetName, targetAddr, err := s.resolve(s.cfg.Images)
-	if err != nil {
+	if _, _, err := s.Resolve(s.cfg.Images); err != nil {
 		s.logger.Printf("取图失败（服务 %s）: %v", s.cfg.Images, err)
 		return nil
 	}
@@ -172,14 +166,10 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, id := range ids {
-		raw, err := protocol.EncodePayload(protocol.ImageFetchPayload{ID: id})
-		if err != nil {
-			continue
-		}
 		wg.Add(1)
-		go func(id string, raw msgpack.RawMessage) {
+		go func(id string) {
 			defer wg.Done()
-			data, err := s.callService(ctx, targetName, targetAddr, "fetch", raw, trace)
+			data, err := s.Call(ctx, s.cfg.Images, "fetch", protocol.ImageFetchPayload{ID: id}, trace, "")
 			if err != nil {
 				s.logger.Printf("取图 %s 失败: %v", id, err)
 				return
@@ -192,7 +182,7 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 			mu.Lock()
 			out[id] = "data:" + fr.Mime + ";base64," + fr.Data
 			mu.Unlock()
-		}(id, raw)
+		}(id)
 	}
 	wg.Wait()
 	if len(out) > 0 {
@@ -209,60 +199,17 @@ type stepPayload struct {
 
 // fireStep 自跳：向后继推理发 step——发出即完，后台尽力送达（失败记日志）。
 func (s *Server) fireStep(env protocol.Envelope, conversationID string, messages []llm.Message) {
-	raw, err := protocol.EncodePayload(stepPayload{Messages: messages, ConversationID: conversationID})
-	if err != nil {
-		s.logger.Printf("step 编码失败: %v", err)
-		return
-	}
-	s.fireJump(s.cfg.Name, s.selfURL, "step", raw, env.Trace, env.Boss)
-}
-
-// fireToService 向名册中的服务发起一跳（发出即完；失败记日志）。
-func (s *Server) fireToService(service, action string, payload any, trace, boss string) {
-	name, addr, err := s.resolve(service)
-	if err != nil {
-		s.logger.Printf("fireToService %s(%s) 失败: %v", service, action, err)
-		return
-	}
-	raw, err := protocol.EncodePayload(payload)
-	if err != nil {
-		s.logger.Printf("fireToService %s(%s) 编码失败: %v", service, action, err)
-		return
-	}
-	s.fireJump(name, addr, action, raw, trace, boss)
+	s.Fire("self", "step", stepPayload{Messages: messages, ConversationID: conversationID}, env.Trace, env.Boss)
 }
 
 // startMemoryRound 开启一轮“记忆往返”：把任务上下文（含原 boss）托管给记忆服务。
 // 记忆服务的 resume（from=memory）回来时才真正调用 LLM API（完全启动）。
 func (s *Server) startMemoryRound(env protocol.Envelope, conversationID string, messages []llm.Message) {
-	s.fireToService(s.cfg.Memory, "recall", protocol.RecallPayload{Context: protocol.TaskContext{
+	s.Fire(s.cfg.Memory, "recall", protocol.RecallPayload{Context: protocol.TaskContext{
 		ConversationID: conversationID,
 		Messages:       messages,
 		Boss:           env.Boss,
 	}}, env.Trace, s.cfg.Name)
-}
-
-// fireJump 后台发起一跳（不等最终结果；完成与否仅记日志）。
-func (s *Server) fireJump(targetName, targetAddr, action string, input msgpack.RawMessage, trace, boss string) {
-	go func() {
-		c, err := protocol.Dial(targetAddr, nil)
-		if err != nil {
-			s.logger.Printf("fireJump 连接 %s 失败: %v", targetAddr, err)
-			return
-		}
-		defer c.Close()
-		env, err := protocol.NewEnvelope(protocol.TypeJump, s.cfg.Name, targetName, trace, protocol.JumpPayload{Action: action, Input: input})
-		if err != nil {
-			s.logger.Printf("fireJump 构造失败: %v", err)
-			return
-		}
-		env.Boss = boss
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		if _, err := c.Call(ctx, env); err != nil {
-			s.logger.Printf("fireJump %s(%s) 未确认送达: %v", targetName, action, err)
-		}
-	}()
 }
 
 // deliverToBoss 把最终结果交付给 boss（同步等回执；失败返回错误）。
@@ -271,15 +218,7 @@ func (s *Server) deliverToBoss(ctx context.Context, env protocol.Envelope, conve
 	if env.Boss == "" {
 		return errors.New("无 boss，结果无法交付")
 	}
-	targetName, targetAddr, err := s.resolve(env.Boss)
-	if err != nil {
-		return err
-	}
-	data, err := protocol.EncodePayload(protocol.DeliverPayload{Text: text, ConversationID: conversationID})
-	if err != nil {
-		return err
-	}
-	if _, err := s.callService(ctx, targetName, targetAddr, "deliver", data, env.Trace); err != nil {
+	if _, err := s.Call(ctx, env.Boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: conversationID}, env.Trace, ""); err != nil {
 		return fmt.Errorf("交付 boss(%s) 失败: %w", env.Boss, err)
 	}
 	return nil
@@ -314,7 +253,7 @@ func (s *Server) inferStep(ctx context.Context, env protocol.Envelope, conversat
 			return nil, err
 		}
 		// 交付成功：把最终答复记入记忆（尽力送达）。
-		s.fireToService(s.cfg.Memory, "store", protocol.StorePayload{
+		s.Fire(s.cfg.Memory, "store", protocol.StorePayload{
 			ConversationID: conversationID, Role: "assistant", Content: resp.Content,
 		}, env.Trace, s.cfg.Name)
 		return map[string]any{"status": "done"}, nil
@@ -339,7 +278,7 @@ func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in 
 	}
 
 	// 记一条用户消息（尽力送达；幂等与去重在记忆服务侧处理）。
-	s.fireToService(s.cfg.Memory, "store", protocol.StorePayload{
+	s.Fire(s.cfg.Memory, "store", protocol.StorePayload{
 		ConversationID: cid, Role: "user", Content: p.Text,
 	}, env.Trace, s.cfg.Name)
 

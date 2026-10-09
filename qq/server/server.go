@@ -1,5 +1,5 @@
-// Package server 是 qq 服务的核心：注册 / 名册 / 心跳 / deliver，
-// 以及 QQ 私聊消息 → user_message 任务链的桥接（NapCat/OneBot 11 正向 WS）。
+// qq 服务的核心：把 deliver 动作注册到服务骨架（注册 / 心跳 / 名册 /
+// 断线自愈 / 告别见 service 包），并桥接 QQ 私聊消息 → user_message 任务链（NapCat/OneBot 11 正向 WS）。
 // 零信任：仅主人私聊触发任务；群聊本批次未启用。
 package server
 
@@ -8,19 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
-	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/vmihailenco/msgpack/v5"
-
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 	"github.com/QAQ-awa-QAQ/sump/qq/napcat"
+	"github.com/QAQ-awa-QAQ/sump/service"
 )
 
 // Config 是 qq 服务的启动配置。
@@ -36,47 +31,40 @@ type Config struct {
 	Images            string        // 图片服务名（默认 images）
 }
 
-// ActionFunc 处理一次跳转动作，返回的数据会作为响应 payload 的 data。
-type ActionFunc func(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error)
-
-// Server 是 qq 服务实例。
+// Server 是 qq 服务实例（服务骨架 + NapCat 客户端）。
 type Server struct {
+	*service.Service
+
 	cfg    Config
 	logger *log.Logger
 	napcat *napcat.Client
 
-	mu      sync.Mutex
-	roster  map[string]protocol.ServiceCard
-	selfURL string // 对外地址（Start 成功后有效）
-
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex // 会话级串行锁（防同一会话消息乱序）
-
-	actions map[string]ActionFunc
-
-	center  *protocol.Client
-	httpSrv *http.Server
 }
 
 // New 创建实例并注册动作。
 func New(cfg Config, logger *log.Logger) *Server {
-	if cfg.HeartbeatInterval <= 0 {
-		cfg.HeartbeatInterval = 15 * time.Second
-	}
 	if cfg.Agent == "" {
 		cfg.Agent = "reasoner"
 	}
 	if cfg.Images == "" {
 		cfg.Images = "images"
 	}
-	s := &Server{
-		cfg:     cfg,
-		logger:  logger,
-		roster:  map[string]protocol.ServiceCard{},
-		locks:   map[string]*sync.Mutex{},
-		actions: map[string]ActionFunc{},
-	}
-	s.actions["deliver"] = s.actionDeliver
+	s := &Server{cfg: cfg, logger: logger, locks: map[string]*sync.Mutex{}}
+	s.Service = service.New(service.Config{
+		Name:              cfg.Name,
+		Listen:            cfg.Listen,
+		Center:            cfg.Center,
+		HeartbeatInterval: cfg.HeartbeatInterval,
+		Description:       "QQ 接入（NapCat/OneBot 11 · 仅私聊）：消息 → 任务链；deliver → 发回 QQ",
+		Provides: []protocol.Provide{
+			{Action: "deliver", Input: "{text, conversation_id}", Output: "回执（已发回 QQ）"},
+		},
+		Settings: []protocol.Setting{{Key: "conn.default_ttl", Default: "5m"}},
+		Logger:   logger,
+	})
+	s.Handle("deliver", s.actionDeliver)
 	s.napcat = napcat.New(napcat.Config{
 		URL:       cfg.NapCatURL,
 		Token:     cfg.NapCatToken,
@@ -86,241 +74,16 @@ func New(cfg Config, logger *log.Logger) *Server {
 	return s
 }
 
-// WsURL 返回自己的对外地址（Start 成功后有效）。
-func (s *Server) WsURL() string { return s.selfURL }
-
-// Start 启动 WS 服务端、注册设置中心、开始心跳与 NapCat 连接循环。
+// Start 启动服务骨架，并额外启动 NapCat 连接循环（连不上会自动重试，不阻塞其余服务）。
 func (s *Server) Start(ctx context.Context) error {
-	ln, err := net.Listen("tcp", s.cfg.Listen)
-	if err != nil {
-		return err
-	}
-	s.selfURL = "ws://" + ln.Addr().String() + "/ws"
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", s.handleWS)
-	s.httpSrv = &http.Server{Handler: mux}
-	go func() {
-		if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			s.logger.Printf("服务退出: %v", err)
-		}
-	}()
-	s.logger.Printf("qq 监听 %s", s.selfURL)
 	if s.cfg.Owner == "" {
 		s.logger.Printf("警告: 未配置主人 QQ（-owner），所有私聊都将被拒绝")
 	}
-
-	if err := s.register(ctx); err != nil {
-		return fmt.Errorf("注册失败: %w", err)
+	if err := s.Service.Start(ctx); err != nil {
+		return err
 	}
-	go s.heartbeatLoop(ctx)
 	go s.napcat.Run(ctx)
 	return nil
-}
-
-// Shutdown 关闭 WS 服务端与到设置中心的连接。
-func (s *Server) Shutdown() {
-	if s.httpSrv != nil {
-		_ = s.httpSrv.Close()
-	}
-	if s.center != nil {
-		_ = s.center.Close()
-	}
-}
-
-// Roster 返回当前名册快照（按服务名排序）。
-func (s *Server) Roster() []protocol.ServiceCard {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]protocol.ServiceCard, 0, len(s.roster))
-	for _, c := range s.roster {
-		out = append(out, c)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
-}
-
-func (s *Server) register(ctx context.Context) error {
-	c, err := protocol.Dial(s.cfg.Center, s.onCenterEvent)
-	if err != nil {
-		return err
-	}
-	s.center = c
-
-	env, err := protocol.NewEnvelope(protocol.TypeRegister, s.cfg.Name, "settings-center", "", protocol.RegisterPayload{
-		Name:        s.cfg.Name,
-		Addr:        s.selfURL,
-		Description: "QQ 接入（NapCat/OneBot 11 · 仅私聊）：消息 → 任务链；deliver → 发回 QQ",
-		Provides: []protocol.Provide{
-			{Action: "deliver", Input: "{text, conversation_id}", Output: "回执（已发回 QQ）"},
-		},
-		Settings: []protocol.Setting{{Key: "conn.default_ttl", Default: "5m"}},
-	})
-	if err != nil {
-		return err
-	}
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		return err
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		return err
-	}
-	if !rp.OK {
-		return errors.New("register rejected: " + rp.Error)
-	}
-	var roster protocol.RosterPayload
-	if err := protocol.DecodeRaw(rp.Data, &roster); err != nil {
-		return err
-	}
-	s.setRoster(roster)
-	s.logger.Printf("注册成功（%s），名册 %d 个服务 (rev %d)", s.selfURL, len(roster.Services), roster.Revision)
-	return nil
-}
-
-func (s *Server) heartbeatLoop(ctx context.Context) {
-	t := time.NewTicker(s.cfg.HeartbeatInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-t.C:
-			env, err := protocol.NewEnvelope(protocol.TypeHeartbeat, s.cfg.Name, "settings-center", "", protocol.HeartbeatPayload{Status: "ok"})
-			if err == nil && s.center != nil {
-				_ = s.center.Send(env)
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func (s *Server) onCenterEvent(env protocol.Envelope) {
-	switch env.Type {
-	case protocol.TypeRoster:
-		var r protocol.RosterPayload
-		if err := env.DecodePayload(&r); err != nil {
-			s.logger.Printf("roster 解析失败: %v", err)
-			return
-		}
-		s.setRoster(r)
-		s.logger.Printf("roster 更新: %d 个服务 (rev %d)", len(r.Services), r.Revision)
-	default:
-		s.logger.Printf("未知事件: %s", env.Type)
-	}
-}
-
-func (s *Server) setRoster(r protocol.RosterPayload) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.roster = make(map[string]protocol.ServiceCard, len(r.Services))
-	for _, c := range r.Services {
-		s.roster[c.Name] = c
-	}
-}
-
-// ---------- WS 服务端（接受 jump：deliver） ----------
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(*http.Request) bool { return true },
-}
-
-// outConn 是 qq 一侧的写封装（gorilla 不支持并发写）。
-type outConn struct {
-	ws     *websocket.Conn
-	mu     sync.Mutex
-	closed bool
-}
-
-// Send 发送一条消息（线程安全）。
-func (c *outConn) Send(env protocol.Envelope) error {
-	data, err := protocol.Marshal(env)
-	if err != nil {
-		return err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return protocol.ErrConnClosed
-	}
-	return c.ws.WriteMessage(websocket.BinaryMessage, data)
-}
-
-// Close 关闭连接。
-func (c *outConn) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	return c.ws.Close()
-}
-
-func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		s.logger.Printf("升级失败: %v", err)
-		return
-	}
-	go s.serveConn(ws)
-}
-
-func (s *Server) serveConn(ws *websocket.Conn) {
-	c := &outConn{ws: ws}
-	defer c.Close()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, err := protocol.Unmarshal(data)
-		if err != nil {
-			s.logger.Printf("坏帧: %v", err)
-			continue
-		}
-		if env.Type != protocol.TypeJump {
-			s.replyError(c, env, "unsupported message type: "+env.Type)
-			continue
-		}
-		s.handleJump(c, env)
-	}
-}
-
-func (s *Server) handleJump(c *outConn, env protocol.Envelope) {
-	var jp protocol.JumpPayload
-	if err := env.DecodePayload(&jp); err != nil {
-		s.replyError(c, env, "bad jump payload")
-		return
-	}
-	fn, ok := s.actions[jp.Action]
-	if !ok {
-		s.replyError(c, env, "unknown action: "+jp.Action)
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	out, err := fn(ctx, env, jp)
-	if err != nil {
-		s.replyError(c, env, err.Error())
-		return
-	}
-	data, err := protocol.EncodePayload(out)
-	if err != nil {
-		s.replyError(c, env, "encode result failed")
-		return
-	}
-	resp, err := protocol.NewResponse(env, s.cfg.Name, protocol.ResponsePayload{OK: true, Data: data})
-	if err == nil {
-		_ = c.Send(resp)
-	}
-}
-
-func (s *Server) replyError(c *outConn, req protocol.Envelope, msg string) {
-	resp, err := protocol.NewResponse(req, s.cfg.Name, protocol.ResponsePayload{OK: false, Error: msg})
-	if err == nil {
-		_ = c.Send(resp)
-	}
 }
 
 // ---------- 动作 ----------
@@ -408,15 +171,9 @@ func (s *Server) onQQEvent(ev napcat.Event) {
 
 // saveImage 把图片 URL 交给 images 服务保存，返回图片 id。
 func (s *Server) saveImage(url string) (string, error) {
-	targetName, targetAddr, err := s.resolve(s.cfg.Images)
-	if err != nil {
-		return "", err
-	}
-	raw, err := protocol.EncodePayload(protocol.ImageSavePayload{URL: url})
-	if err != nil {
-		return "", err
-	}
-	data, err := s.callService(targetName, targetAddr, "save", raw, protocol.NewID(), s.cfg.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	data, err := s.Call(ctx, s.cfg.Images, "save", protocol.ImageSavePayload{URL: url}, protocol.NewID(), s.cfg.Name)
 	if err != nil {
 		return "", err
 	}
@@ -429,15 +186,9 @@ func (s *Server) saveImage(url string) (string, error) {
 
 // callAgent 向 reasoner 发 user_message（等受理回执；boss=本服务）。
 func (s *Server) callAgent(action string, payload any) error {
-	targetName, targetAddr, err := s.resolve(s.cfg.Agent)
-	if err != nil {
-		return err
-	}
-	raw, err := protocol.EncodePayload(payload)
-	if err != nil {
-		return err
-	}
-	_, err = s.callService(targetName, targetAddr, action, raw, protocol.NewID(), s.cfg.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_, err := s.Call(ctx, s.cfg.Agent, action, payload, protocol.NewID(), s.cfg.Name)
 	return err
 }
 
@@ -470,48 +221,4 @@ func (s *Server) convLock(key string) *sync.Mutex {
 		s.locks[key] = l
 	}
 	return l
-}
-
-// ---------- 服务间访问 ----------
-
-// callService 访问目标服务：发一跳并等响应（短连接）。
-func (s *Server) callService(targetName, targetAddr, action string, input msgpack.RawMessage, trace, boss string) (msgpack.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	c, err := protocol.Dial(targetAddr, nil)
-	if err != nil {
-		return nil, fmt.Errorf("连接 %s 失败: %w", targetAddr, err)
-	}
-	defer c.Close()
-	env, err := protocol.NewEnvelope(protocol.TypeJump, s.cfg.Name, targetName, trace, protocol.JumpPayload{Action: action, Input: input})
-	if err != nil {
-		return nil, err
-	}
-	env.Boss = boss
-	resp, err := c.Call(ctx, env)
-	if err != nil {
-		return nil, fmt.Errorf("跳转 %s(%s) 失败: %w", targetName, action, err)
-	}
-	var rp protocol.ResponsePayload
-	if err := resp.DecodePayload(&rp); err != nil {
-		return nil, err
-	}
-	if !rp.OK {
-		return nil, errors.New("远端错误: " + rp.Error)
-	}
-	return rp.Data, nil
-}
-
-// resolve 解析目标：支持 "self" 与服务名（查名册）。
-func (s *Server) resolve(to string) (name, addr string, err error) {
-	if to == "self" {
-		return s.cfg.Name, s.selfURL, nil
-	}
-	s.mu.Lock()
-	card, ok := s.roster[to]
-	s.mu.Unlock()
-	if !ok {
-		return "", "", fmt.Errorf("未知目标服务: %s", to)
-	}
-	return card.Name, card.Addr, nil
 }
