@@ -1,7 +1,7 @@
 package tests
 
-// M3 全链测试（完全启动）：user_message → 记忆往返（recall → resume）→ 工具跳转（短响应）
-// → 自跳(step) → 再来一轮记忆往返 → 交付(deliver) 直达 boss。
+// M5 全链测试（异步工具 + 完全启动）：user_message → 记忆往返（recall → resume）→ 工具派发
+// （即时受理回执）→ 自跳(step) → LLM 调 wait 阻塞至结果入账 → 收尾轮 → 交付(deliver) 直达 boss。
 
 import (
 	"context"
@@ -88,9 +88,9 @@ func (b *stubBoss) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// TestInferChain 验证 Fake LLM 驱动的全链：
-// user_message（快速回执）→ LLM 决定调 echo（真跳转、短响应）→ 自跳 step
-// → LLM 收尾输出文本 → deliver 直达 boss。
+// TestInferChain 验证 Fake LLM 驱动的全链（异步工具）：
+// user_message（快速回执）→ LLM 决定调 echo（真跳转、后台执行）
+// → 自跳后 LLM 调 wait（阻塞到结果入账）→ LLM 收尾输出文本 → deliver 直达 boss。
 func TestInferChain(t *testing.T) {
 	sc := startStubCenter(t)
 	boss := startStubBoss(t, sc)
@@ -100,6 +100,11 @@ func TestInferChain(t *testing.T) {
 		{Role: "assistant", ToolCalls: []llm.ToolCall{{
 			ID: "call_1", Type: "function",
 			Function: llm.FunctionCall{Name: "reasoner__echo", Arguments: `{"msg":"hi"}`},
+		}}},
+		// 第二轮调 wait：阻塞到 echo 结果入账（让时序与断言可预期）。
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{
+			ID: "call_wait", Type: "function",
+			Function: llm.FunctionCall{Name: "wait", Arguments: `{}`},
 		}}},
 		{Role: "assistant", Content: "最终答复：你好！"},
 	}}
@@ -158,17 +163,19 @@ func TestInferChain(t *testing.T) {
 		t.Fatal("超时：boss 未收到 deliver")
 	}
 
-	// 校验链路确实经过了“工具跳转 + 自跳”：Fake 收到两次请求。
-	if fake.CallCount() != 2 {
-		t.Fatalf("Fake LLM 调用次数 = %d, want 2", fake.CallCount())
+	// 校验异步工具链：派发轮（回执）→ wait 轮（阻塞等待）→ 收尾轮——Fake 共收到 3 次请求。
+	if fake.CallCount() != 3 {
+		t.Fatalf("Fake LLM 调用次数 = %d, want 3", fake.CallCount())
 	}
 	first := fake.Requests[0]
-	// 名册动作映射为工具：跨服务动作在列表中；调试动作（echo / debug_jump）不暴露。
-	var hasPing, hasEcho, hasDebug bool
+	// 名册动作映射为工具：跨服务动作在列表中；调试动作（echo / debug_jump）不暴露；内置 wait 恒在。
+	var hasPing, hasWait, hasEcho, hasDebug bool
 	for _, tool := range first.Tools {
 		switch tool.Function.Name {
 		case "stub-center__ping":
 			hasPing = true
+		case "wait":
+			hasWait = true
 		case "reasoner__echo":
 			hasEcho = true
 		case "reasoner__debug_jump":
@@ -178,6 +185,9 @@ func TestInferChain(t *testing.T) {
 	if !hasPing {
 		t.Fatalf("第一轮请求应包含 stub-center__ping 工具: %+v", first.Tools)
 	}
+	if !hasWait {
+		t.Fatalf("工具列表应包含内置 wait: %+v", first.Tools)
+	}
 	if hasEcho || hasDebug {
 		t.Fatalf("调试动作不应暴露为工具: %+v", first.Tools)
 	}
@@ -185,21 +195,33 @@ func TestInferChain(t *testing.T) {
 	if !hasMemoryBlock(first.Messages) {
 		t.Fatalf("第一轮请求应含记忆块: %+v", first.Messages)
 	}
+	// 第二轮请求：echo 已受理——回执（tool 消息）占住 tool_calls 的配对位。
 	second := fake.Requests[1]
-	hasToolResult := false
+	hasAck := false
 	for _, m := range second.Messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "已受理") && strings.Contains(m.Content, "call_1") {
+			hasAck = true
+		}
+	}
+	if !hasAck {
+		t.Fatalf("第二轮请求应包含 echo 的受理回执: %+v", second.Messages)
+	}
+	// 第三轮请求（wait 返回后）：echo 结果已作为 [工具结果] 消息注入。
+	third := fake.Requests[2]
+	hasResult := false
+	for _, m := range third.Messages {
 		if strings.Contains(m.Content, "错误") {
 			t.Fatalf("工具执行出错: %s", m.Content)
 		}
-		if m.Role == "tool" && strings.Contains(m.Content, "hi") {
-			hasToolResult = true
+		if m.Role == "user" && strings.Contains(m.Content, "[工具结果]") && strings.Contains(m.Content, "hi") {
+			hasResult = true
 		}
 	}
-	if !hasToolResult {
-		t.Fatalf("第二轮请求应包含 echo 的 tool 结果: %+v", second.Messages)
+	if !hasResult {
+		t.Fatalf("第三轮请求应包含 echo 的 [工具结果] 消息: %+v", third.Messages)
 	}
-	if !hasMemoryBlock(second.Messages) {
-		t.Fatalf("第二轮请求应含记忆块: %+v", second.Messages)
+	if !hasMemoryBlock(third.Messages) {
+		t.Fatalf("第三轮请求应含记忆块: %+v", third.Messages)
 	}
 
 	// 记忆写入：用户消息（链入口）与最终答复（交付后）各记一条。

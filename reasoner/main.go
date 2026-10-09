@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
 	"github.com/QAQ-awa-QAQ/sump/reasoner/server"
@@ -23,6 +24,8 @@ func main() {
 	llmKey := flag.String("llm-key", os.Getenv("DEEPSEEK_API_KEY"), "LLM API Key（默认取环境变量 DEEPSEEK_API_KEY）")
 	llmModel := flag.String("llm-model", "deepseek-chat", "LLM 模型名")
 	toolConc := flag.Int("tool-concurrency", 10, "单会话工具并发上限（-1 = 不限制）")
+	toolTimeout := flag.Duration("tool-timeout", 60*time.Second, "单个工具调用的执行超时")
+	toolNotify := flag.String("tool-notify", "each", "工具结果通知模式：each=逐条唤醒 / batch=攒批唤醒（设置中心 tool.notify_mode 覆盖此项）")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "[reasoner] ", log.LstdFlags|log.Lmicroseconds)
@@ -31,7 +34,7 @@ func main() {
 	}
 	llmClient := llm.NewDeepSeekClient(*llmBase, *llmKey, *llmModel)
 
-	s := server.New(server.Config{Name: *name, Listen: *addr, Center: *center, Memory: *memorySvc, Images: *imagesSvc, LLM: llmClient, ToolConcurrency: *toolConc}, logger)
+	s := server.New(server.Config{Name: *name, Listen: *addr, Center: *center, Memory: *memorySvc, Images: *imagesSvc, LLM: llmClient, ToolConcurrency: *toolConc, ToolTimeout: *toolTimeout, NotifyMode: *toolNotify}, logger)
 	if err := s.Start(context.Background()); err != nil {
 		logger.Fatalf("启动失败: %v", err)
 	}

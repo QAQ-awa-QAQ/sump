@@ -41,9 +41,10 @@ type stubCenter struct {
 	srv    *http.Server
 	logger *log.Logger
 
-	mu    sync.Mutex
-	cards map[string]protocol.ServiceCard
-	conns map[*stubConn]struct{}
+	mu       sync.Mutex
+	cards    map[string]protocol.ServiceCard
+	conns    map[*stubConn]struct{}
+	settings *protocol.SettingsResult // 非 nil 时响应 list_settings
 }
 
 var stubUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -116,8 +117,21 @@ func (sc *stubCenter) handleWS(w http.ResponseWriter, r *http.Request) {
 			if err := env.DecodePayload(&jp); err != nil {
 				continue
 			}
-			if jp.Action == "ping" {
+			switch jp.Action {
+			case "ping":
 				data, _ := protocol.EncodePayload(map[string]any{"pong": true, "who": "stub-center"})
+				resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true, Data: data})
+				c.send(resp)
+			case "list_settings":
+				sc.mu.Lock()
+				settings := sc.settings
+				sc.mu.Unlock()
+				if settings == nil {
+					resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: false, Error: "unknown action: " + jp.Action})
+					c.send(resp)
+					continue
+				}
+				data, _ := protocol.EncodePayload(*settings)
 				resp, _ := protocol.NewResponse(env, "stub-center", protocol.ResponsePayload{OK: true, Data: data})
 				c.send(resp)
 			}
@@ -153,6 +167,19 @@ func (sc *stubCenter) broadcast(roster protocol.RosterPayload) {
 			c.send(env)
 		}
 	}
+}
+
+// withSettings 让替身响应 list_settings：注册“settings-center”名片并给出设置结果
+// （在 reasoner 启动前调用——它启动时会拉取一次）。
+func (sc *stubCenter) withSettings(t *testing.T, res protocol.SettingsResult) {
+	t.Helper()
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.cards["settings-center"] = protocol.ServiceCard{
+		Name: "settings-center", Addr: sc.URL(), Description: "设置中心替身",
+		Provides: []protocol.Provide{{Action: "list_settings"}, {Action: "set_setting"}, {Action: "reset_setting"}},
+	}
+	sc.settings = &res
 }
 
 // ---------- 测试辅助 ----------

@@ -1,8 +1,9 @@
 package server
 
 // reasoner 服务的核心：把单步推理相关动作注册到服务骨架（注册 / 心跳 /
-// 名册 / 断线自愈 / 告别见 service 包）。按 DESIGN.md 的“自我跳转”设计：
-// reasoner 不持有循环——它是单步推理器，每收到一次输入产出一次结果（下一步由跳转推进）。
+// 名册 / 断线自愈 / 告别见 service 包）。任务上下文与在跑工具由内存黑板持有
+// （board.go），窗口 = 任务在跑期；轮次由事件驱动（派发 / 结果注入 / 等待 /
+// 收尾门禁），轮次间以自跳 step 衔接——服务本身不驻留循环。
 
 import (
 	"context"
@@ -26,8 +27,10 @@ type Config struct {
 	HeartbeatInterval time.Duration // 心跳间隔（默认 15s）
 	Memory            string        // 记忆服务名（默认 memory——“完全启动”链的另一半）
 	Images            string        // 图片服务名（默认 images——推理前取图内联）
-	LLM               llm.Client    // 单步推理的 LLM 客户端（user_message / step 必需；nil 时相关动作报错）
+	LLM               llm.Client    // 单步推理的 LLM 客户端（user_message 链必需；nil 时轮次停住）
 	ToolConcurrency   int           // 单会话工具并发上限（默认 10；负值 = 不限制；同一服务可并发重复）
+	ToolTimeout       time.Duration // 单个工具调用的执行超时（默认 60s）
+	NotifyMode        string        // 工具结果通知模式："each"（逐条唤醒，默认）/ "batch"（攒批唤醒）；设置中心 tool.notify_mode 覆盖此项
 }
 
 // Server 是 reasoner 服务实例（服务骨架 + 推理配置）。
@@ -39,6 +42,12 @@ type Server struct {
 
 	semsMu sync.Mutex               // 工具并发信号量表锁
 	sems   map[string]chan struct{} // 会话 → 工具并发信号量（懒创建）
+
+	boardMu sync.Mutex            // 黑板锁
+	board   map[string]*taskState // 会话 → 进行中的任务（窗口 = 任务在跑期）
+
+	notifyMu sync.Mutex // 通知模式锁
+	notify   string     // 工具结果通知模式（each / batch）
 }
 
 // New 创建实例并注册动作。
@@ -52,7 +61,12 @@ func New(cfg Config, logger *log.Logger) *Server {
 	if cfg.ToolConcurrency == 0 {
 		cfg.ToolConcurrency = 10
 	}
-	s := &Server{cfg: cfg, logger: logger, sems: map[string]chan struct{}{}}
+	s := &Server{
+		cfg: cfg, logger: logger,
+		sems:   map[string]chan struct{}{},
+		board:  map[string]*taskState{},
+		notify: cfg.NotifyMode,
+	}
 	s.Service = service.New(service.Config{
 		Name:              cfg.Name,
 		Listen:            cfg.Listen,
@@ -64,8 +78,11 @@ func New(cfg Config, logger *log.Logger) *Server {
 			{Action: "echo", Input: "任意", Output: "原样返回（测试用）"},
 			{Action: "debug_jump", Input: "{to, action, input}", Output: "目标服务的响应数据（调试用）"},
 		},
-		Settings: []protocol.Setting{{Key: "conn.default_ttl", Default: "5m"}},
-		Logger:   logger,
+		Settings: []protocol.Setting{
+			{Key: "conn.default_ttl", Default: "5m"},
+			{Key: "tool.notify_mode", Default: "each"},
+		},
+		Logger: logger,
 	})
 	s.Handle("echo", s.actionEcho)
 	s.Handle("debug_jump", s.actionDebugJump)
@@ -73,6 +90,68 @@ func New(cfg Config, logger *log.Logger) *Server {
 	s.Handle("step", s.actionStep)
 	s.Handle("resume", s.actionResume)
 	return s
+}
+
+// Start 启动服务骨架，并同步拉取一次设置中心里本服务的设置覆盖值（覆盖不改变运行中的轮次）。
+func (s *Server) Start(ctx context.Context) error {
+	if err := s.Service.Start(ctx); err != nil {
+		return err
+	}
+	s.pullSettings(ctx)
+	return nil
+}
+
+// pullSettings 拉取设置中心里本服务的设置（目前只关心 tool.notify_mode 的覆盖值）。
+// 拉取失败不阻塞启动：沿用本地默认（CLI 参数）。
+func (s *Server) pullSettings(ctx context.Context) {
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	data, err := s.Call(cctx, "settings-center", "list_settings", protocol.SettingsListPayload{Service: s.cfg.Name}, s.cfg.Name, "")
+	if err != nil {
+		s.logger.Printf("拉取设置失败（沿用本地值 %s）: %v", s.notifyMode(), err)
+		return
+	}
+	var res protocol.SettingsResult
+	if err := protocol.DecodeRaw(data, &res); err != nil {
+		s.logger.Printf("设置解析失败（沿用本地值 %s）: %v", s.notifyMode(), err)
+		return
+	}
+	for _, svc := range res.Services {
+		if svc.Service != s.cfg.Name {
+			continue
+		}
+		for _, item := range svc.Settings {
+			if item.Key == "tool.notify_mode" && item.Overridden && item.Value != "" {
+				s.setNotifyMode(item.Value)
+				s.logger.Printf("设置生效: tool.notify_mode=%s（来自设置中心）", item.Value)
+			}
+		}
+	}
+}
+
+// toolTimeout 返回单个工具调用的执行超时（默认 60s）。
+func (s *Server) toolTimeout() time.Duration {
+	if s.cfg.ToolTimeout > 0 {
+		return s.cfg.ToolTimeout
+	}
+	return 60 * time.Second
+}
+
+// notifyMode 返回工具结果通知模式："each"（逐条唤醒，默认）或 "batch"（攒批唤醒）。
+func (s *Server) notifyMode() string {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	if s.notify == "batch" {
+		return "batch"
+	}
+	return "each"
+}
+
+// setNotifyMode 设置通知模式（启动时由设置中心覆盖值调用）。
+func (s *Server) setNotifyMode(v string) {
+	s.notifyMu.Lock()
+	s.notify = v
+	s.notifyMu.Unlock()
 }
 
 // ---------- 调试 / 测试动作 ----------

@@ -22,7 +22,8 @@ import (
 	"github.com/QAQ-awa-QAQ/sump/protocol"
 )
 
-// fakeDeepSeek 是 OpenAI 兼容的假 LLM：toolFirst=true 时第一次请求回 tool_call、之后回文本；
+// fakeDeepSeek 是 OpenAI 兼容的假 LLM（异步工具版剧本）：
+// toolFirst=true 时：第 1 轮回 tool_call（echo）、第 2 轮回 tool_call（wait）、其后回文本；
 // toolFirst=false 时始终回文本。
 type fakeDeepSeek struct {
 	mu       sync.Mutex
@@ -50,7 +51,8 @@ func startFakeDeepSeek(t *testing.T, toolFirst bool) *fakeDeepSeek {
 		f.mu.Unlock()
 
 		var msg map[string]any
-		if toolFirst && call == 1 {
+		switch {
+		case toolFirst && call == 1:
 			msg = map[string]any{
 				"role": "assistant",
 				"tool_calls": []any{map[string]any{
@@ -62,7 +64,20 @@ func startFakeDeepSeek(t *testing.T, toolFirst bool) *fakeDeepSeek {
 					},
 				}},
 			}
-		} else {
+		case toolFirst && call == 2:
+			// 异步工具：第 2 轮调 wait，阻塞到 echo 结果入账。
+			msg = map[string]any{
+				"role": "assistant",
+				"tool_calls": []any{map[string]any{
+					"id":   "call_wait",
+					"type": "function",
+					"function": map[string]any{
+						"name":      "wait",
+						"arguments": `{}`,
+					},
+				}},
+			}
+		default:
 			msg = map[string]any{"role": "assistant", "content": "E2E 最终答复"}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -201,7 +216,8 @@ func (b *e2eBoss) register(t *testing.T, centerURL string) *protocol.Client {
 }
 
 // TestInferChainE2E 真进程版全链（完全启动）：user_message → 记忆往返（recall → resume）
-// → 工具跳转 → 自跳 → 记忆往返 → deliver；并以预置会话历史验证记忆注入。
+// → 工具派发（异步受理回执）→ 自跳 → wait 等到结果 → 收尾轮 → deliver；
+// 并以预置会话历史验证记忆注入。
 func TestInferChainE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
 	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
@@ -323,8 +339,8 @@ func TestInferChainE2E(t *testing.T) {
 		t.Fatal("超时：boss 未收到 deliver")
 	}
 
-	if fakeLLM.Calls() != 2 {
-		t.Fatalf("假 DeepSeek 调用次数 = %d, want 2", fakeLLM.Calls())
+	if fakeLLM.Calls() != 3 {
+		t.Fatalf("假 DeepSeek 调用次数 = %d, want 3", fakeLLM.Calls())
 	}
 	reqs := fakeLLM.Requests()
 
@@ -341,18 +357,33 @@ func TestInferChainE2E(t *testing.T) {
 		t.Fatalf("第一轮 LLM 请求应含注入的会话历史: %+v", msgs1)
 	}
 
-	// 第二轮请求：含 echo 的 tool 结果（自跳轮同样先经记忆）。
+	// 第二轮请求：echo 已受理——回执（tool 消息）占住 tool_calls 的配对位。
 	msgs2, _ := reqs[1]["messages"].([]any)
-	found := false
+	foundAck := false
 	for _, m := range msgs2 {
 		mm, _ := m.(map[string]any)
 		if mm["role"] == "tool" {
-			if s, _ := mm["content"].(string); strings.Contains(s, "e2e") {
-				found = true
+			if s, _ := mm["content"].(string); strings.Contains(s, "已受理") && strings.Contains(s, "call_e2e") {
+				foundAck = true
 			}
 		}
 	}
-	if !found {
-		t.Fatalf("第二次 LLM 请求应包含 echo 的 tool 结果: %+v", msgs2)
+	if !foundAck {
+		t.Fatalf("第二次 LLM 请求应包含 echo 的受理回执: %+v", msgs2)
+	}
+
+	// 第三轮请求（wait 返回后）：echo 结果已作为 [工具结果] 注入。
+	msgs3, _ := reqs[2]["messages"].([]any)
+	foundResult := false
+	for _, m := range msgs3 {
+		mm, _ := m.(map[string]any)
+		if mm["role"] == "user" {
+			if s, _ := mm["content"].(string); strings.Contains(s, "[工具结果]") && strings.Contains(s, "e2e") {
+				foundResult = true
+			}
+		}
+	}
+	if !foundResult {
+		t.Fatalf("第三次 LLM 请求应包含 [工具结果]: %+v", msgs3)
 	}
 }

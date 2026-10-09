@@ -1,8 +1,9 @@
 package server
 
-// 单步推理：roster → LLM 工具、工具调用执行、自跳（step）与交付（deliver）。
-// 完全启动链：任务与自跳都先经记忆服务（recall 托管上下文）；只有“from=memory 的 resume”
-// 才触发对 LLM API 的调用。循环不驻留本服务：每步“收到 → 处理 → 发出下一跳 → 结束”。
+// 单步推理：roster → LLM 工具、工具派发（异步）与交付（deliver）。
+// 完全启动链：任务入口先经记忆服务（recall 托管上下文）；只有“from=memory 的 resume”
+// 才触发对 LLM API 的调用。任务上下文与在跑工具由内存黑板持有（见 board.go）：
+// 工具调用即时回执、结果注入黑板再唤醒下一轮；服务不驻留循环。
 
 import (
 	"context"
@@ -18,12 +19,16 @@ import (
 	"github.com/QAQ-awa-QAQ/sump/reasoner/llm"
 )
 
-// systemPrompt 是单步推理器的系统提示（M2 初版）。
+// systemPrompt 是单步推理器的系统提示（M5 异步工具版）。
 const systemPrompt = `你是 SUMP 服务网络中的“单步推理器”（reasoner 服务）。
 你会收到一段对话上下文。你的职责是决定下一步：
 1. 需要外部能力时，调用提供的工具（工具 = 网络中其他服务的动作）；
 2. 当任务可以收尾、或用户问候闲聊时，直接输出最终答复文本。
-工具由系统代你执行，结果会以 tool 消息追加到对话中再交给你继续。`
+
+工具是异步执行的：
+- 你发起调用后会立刻收到“已受理”回执（tool 消息），执行结果稍后以“[工具结果] …”开头的消息送达；
+- 可以并行调用多个工具；也可以调用 wait 工具等待全部工具完成，或先继续做其他事；
+- 仍有工具任务未完成时不要收尾——若提前输出最终答复，系统会拒绝并要求你继续等待。`
 
 // structuralActions 是不作为工具暴露给 LLM 的动作：协议/链机制动作（模型不得绕过链路），
 // 以及本服务的调试/测试动作（echo / debug_jump——不给模型“万能遥控”）。
@@ -58,6 +63,15 @@ func (s *Server) rosterTools() []llm.Tool {
 			})
 		}
 	}
+	// 内置工具（不来自名册）：wait——等待本会话全部工具任务完成。
+	out = append(out, llm.Tool{
+		Type: "function",
+		Function: llm.ToolFunction{
+			Name:        waitToolName,
+			Description: "等待本会话所有进行中的工具任务完成（阻塞到结果到齐或超时）。结果尚未到齐、不能收尾时使用。",
+			Parameters:  map[string]any{"type": "object"},
+		},
+	})
 	return out
 }
 
@@ -98,23 +112,8 @@ func rawToJSONText(raw msgpack.RawMessage) string {
 	return string(b)
 }
 
-// executeToolCall 执行一次工具调用：解析目标 → 跳转（短响应）→ 结果消息。
-// 任何失败都转成 tool 消息内容（交回 LLM 决定），不中断链。
-func (s *Server) executeToolCall(ctx context.Context, env protocol.Envelope, call llm.ToolCall) llm.Message {
-	msg := llm.Message{Role: "tool", ToolCallID: call.ID}
-	content, err := s.runToolCall(ctx, env, call)
-	if err != nil {
-		s.logger.Printf("工具 %s 失败: %v", call.Function.Name, err)
-		msg.Content = "错误: " + err.Error()
-		return msg
-	}
-	s.logger.Printf("工具 %s 完成: %.120s", call.Function.Name, content)
-	msg.Content = content
-	return msg
-}
-
-// runToolCall 执行工具调用并返回给 LLM 的内容文本（JSON）。
-func (s *Server) runToolCall(ctx context.Context, env protocol.Envelope, call llm.ToolCall) (string, error) {
+// runToolCall 执行一次工具调用并返回给 LLM 的内容文本（JSON）。
+func (s *Server) runToolCall(ctx context.Context, trace string, call llm.ToolCall) (string, error) {
 	svc, action, ok := parseToolName(call.Function.Name)
 	if !ok {
 		return "", fmt.Errorf("工具名无效: %s", call.Function.Name)
@@ -123,38 +122,11 @@ func (s *Server) runToolCall(ctx context.Context, env protocol.Envelope, call ll
 	if err != nil {
 		return "", err
 	}
-	data, err := s.Call(ctx, svc, action, rawIn, env.Trace, "")
+	data, err := s.Call(ctx, svc, action, rawIn, trace, "")
 	if err != nil {
 		return "", err
 	}
 	return rawToJSONText(data), nil
-}
-
-// runToolCalls 并发执行多个工具调用，结果按调用顺序返回。
-// 并发受会话级信号量约束（config.ToolConcurrency；负值 = 不限制）；
-// 同一服务的多个调用可以并发进行，不做去重。
-func (s *Server) runToolCalls(ctx context.Context, env protocol.Envelope, conversationID string, calls []llm.ToolCall) []llm.Message {
-	results := make([]llm.Message, len(calls))
-	sem := s.toolSem(conversationID)
-	var wg sync.WaitGroup
-	for i, call := range calls {
-		wg.Add(1)
-		go func(i int, call llm.ToolCall) {
-			defer wg.Done()
-			if sem != nil {
-				select {
-				case sem <- struct{}{}:
-					defer func() { <-sem }()
-				case <-ctx.Done():
-					results[i] = llm.Message{Role: "tool", ToolCallID: call.ID, Content: "错误: 等待并发额度时上下文已结束"}
-					return
-				}
-			}
-			results[i] = s.executeToolCall(ctx, env, call)
-		}(i, call)
-	}
-	wg.Wait()
-	return results
 }
 
 // toolSem 返回某会话的工具并发信号量（nil = 不限制）。信号量懒创建、按会话复用。
@@ -222,17 +194,6 @@ func (s *Server) resolveImages(ctx context.Context, trace string, messages []llm
 	return out
 }
 
-// stepPayload 是自跳（step）的 payload：完整消息历史随消息携带，会话标识随行。
-type stepPayload struct {
-	Messages       []llm.Message `msgpack:"messages"`
-	ConversationID string        `msgpack:"conversation_id,omitempty"`
-}
-
-// fireStep 自跳：向后继推理发 step——发出即完，后台尽力送达（失败记日志）。
-func (s *Server) fireStep(env protocol.Envelope, conversationID string, messages []llm.Message) {
-	s.Fire("self", "step", stepPayload{Messages: messages, ConversationID: conversationID}, env.Trace, env.Boss)
-}
-
 // startMemoryRound 开启一轮“记忆往返”：把任务上下文（含原 boss）托管给记忆服务。
 // 记忆服务的 resume（from=memory）回来时才真正调用 LLM API（完全启动）。
 func (s *Server) startMemoryRound(env protocol.Envelope, conversationID string, messages []llm.Message) {
@@ -241,56 +202,6 @@ func (s *Server) startMemoryRound(env protocol.Envelope, conversationID string, 
 		Messages:       messages,
 		Boss:           env.Boss,
 	}}, env.Trace, s.cfg.Name)
-}
-
-// deliverToBoss 把最终结果交付给 boss（同步等回执；失败返回错误）。
-// 附带会话标识：boss 用它把结果路由回原会话（如 QQ 私聊）。
-func (s *Server) deliverToBoss(ctx context.Context, env protocol.Envelope, conversationID, text string) error {
-	if env.Boss == "" {
-		return errors.New("无 boss，结果无法交付")
-	}
-	if _, err := s.Call(ctx, env.Boss, "deliver", protocol.DeliverPayload{Text: text, ConversationID: conversationID}, env.Trace, ""); err != nil {
-		return fmt.Errorf("交付 boss(%s) 失败: %w", env.Boss, err)
-	}
-	return nil
-}
-
-// inferStep 是单步推理核心：一次 LLM 调用 → 决策（继续 / 收尾）。
-// 只被完全启动链触发（actionResume → inferStep）。
-func (s *Server) inferStep(ctx context.Context, env protocol.Envelope, conversationID string, messages []llm.Message) (any, error) {
-	if s.cfg.LLM == nil {
-		return nil, errors.New("LLM 未配置（-llm-key 或环境变量 DEEPSEEK_API_KEY）")
-	}
-	resp, err := s.cfg.LLM.Chat(ctx, llm.ChatRequest{
-		Messages: messages,
-		Tools:    s.rosterTools(),
-		Images:   s.resolveImages(ctx, env.Trace, messages),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("LLM 调用失败: %w", err)
-	}
-
-	switch {
-	case len(resp.ToolCalls) > 0:
-		// 并发执行工具（短响应；受会话级并发上限约束），再自跳继续推理（下一轮先经记忆）——发出即完。
-		results := s.runToolCalls(ctx, env, conversationID, resp.ToolCalls)
-		messages = append(messages, llm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls})
-		messages = append(messages, results...)
-		s.fireStep(env, conversationID, messages)
-		return map[string]any{"status": "accepted"}, nil
-	case strings.TrimSpace(resp.Content) != "":
-		// 判定结束：直接交付 boss（不沿链回传）。
-		if err := s.deliverToBoss(ctx, env, conversationID, resp.Content); err != nil {
-			return nil, err
-		}
-		// 交付成功：把最终答复记入记忆（尽力送达）。
-		s.Fire(s.cfg.Memory, "store", protocol.StorePayload{
-			ConversationID: conversationID, Role: "assistant", Content: resp.Content,
-		}, env.Trace, s.cfg.Name)
-		return map[string]any{"status": "done"}, nil
-	default:
-		return nil, errors.New("LLM 返回为空（既无 tool_calls 也无内容）")
-	}
 }
 
 // actionUserMessage 是链的入口：boss 发来用户消息。
@@ -321,26 +232,9 @@ func (s *Server) actionUserMessage(_ context.Context, env protocol.Envelope, in 
 	return map[string]any{"status": "accepted"}, nil
 }
 
-// actionStep 承接前一跳：继续推理前同样先经记忆（半启动）。
-func (s *Server) actionStep(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
-	var p stepPayload
-	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
-		return nil, err
-	}
-	if len(p.Messages) == 0 {
-		return nil, errors.New("step: messages 为空")
-	}
-	cid := p.ConversationID
-	if cid == "" {
-		cid = "default"
-	}
-	s.startMemoryRound(env, cid, p.Messages)
-	return map[string]any{"status": "accepted"}, nil
-}
-
 // actionResume 是完全启动的唯一入口：仅接受来自记忆服务的 resume。
-// 记忆组装好的上下文到达后，才调用 LLM API（见 DESIGN.md §3 记忆往返）。
-func (s *Server) actionResume(ctx context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
+// 记忆组装好的上下文到达后，开启任务（黑板）并立即受理——推理在后台推进（见 board.go）。
+func (s *Server) actionResume(_ context.Context, env protocol.Envelope, in protocol.JumpPayload) (any, error) {
 	if env.From != s.cfg.Memory {
 		return nil, fmt.Errorf("resume 仅接受来自记忆服务（%s）的调用，拒绝来源 %q", s.cfg.Memory, env.From)
 	}
@@ -353,13 +247,15 @@ func (s *Server) actionResume(ctx context.Context, env protocol.Envelope, in pro
 		return nil, errors.New("resume: 上下文为空")
 	}
 	// 该跳信封 boss 是 llm 自身（记忆为 llm 工作）；任务原 boss 随上下文恢复。
-	taskEnv := env
-	if tc.Boss != "" {
-		taskEnv.Boss = tc.Boss
+	boss := tc.Boss
+	if boss == "" {
+		boss = env.Boss
 	}
 	cid := tc.ConversationID
 	if cid == "" {
 		cid = "default"
 	}
-	return s.inferStep(ctx, taskEnv, cid, tc.Messages)
+	st := s.boardOpen(cid, boss, env.Trace, tc.Messages)
+	s.boardKick(st)
+	return map[string]any{"status": "accepted"}, nil
 }
