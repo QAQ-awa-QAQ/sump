@@ -180,3 +180,29 @@ type ResetSettingPayload struct {
 	Service string `msgpack:"service"`
 	Key     string `msgpack:"key"`
 }
+
+// ---------- 长期记忆（memory） ----------
+
+// RememberPayload 是 remember 的 payload：写入一条长期记忆条目。
+type RememberPayload struct {
+	Kind           string `msgpack:"kind"`                      // 分类（自由文本：偏好 / 身份 / 知识 / 事件……）
+	Content        string `msgpack:"content"`                   // 条目正文
+	Priority       int    `msgpack:"priority,omitempty"`        // >0 = 核心记忆（每次对话都注入，不看相关性）
+	ConversationID string `msgpack:"conversation_id,omitempty"` // 可空 = 全局条目
+}
+
+// RememberResult 是 remember 的结果：条目 id 与是否新建（重复内容幂等跳过）。
+type RememberResult struct {
+	ID      int64 `msgpack:"id"`
+	Created bool  `msgpack:"created"`
+}
+
+// ForgetPayload 是 forget 的 payload：软删一条长期记忆（不在 provides 里——不给 LLM 删记忆的按钮）。
+type ForgetPayload struct {
+	ID int64 `msgpack:"id"`
+}
+
+// ForgetResult 是 forget 的结果。
+type ForgetResult struct {
+	ID int64 `msgpack:"id"`
+}

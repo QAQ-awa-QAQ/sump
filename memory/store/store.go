@@ -51,19 +51,14 @@ CREATE TABLE IF NOT EXISTS messages (
 	created_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id);
-
--- 长期记忆（后续批次启用，先建表占位）
-CREATE TABLE IF NOT EXISTS memories (
-	id              INTEGER PRIMARY KEY AUTOINCREMENT,
-	conversation_id TEXT,
-	kind            TEXT,
-	content         TEXT,
-	created_at      TEXT
-);
 `
 
-// Close 关闭数据库。
+// Close 关闭数据库。注意：若还有别的包共享本句柄（如 longterm），由打开方统一关闭。
 func (s *Store) Close() error { return s.db.Close() }
+
+// DB 返回底层句柄：长期记忆库（longterm）与它会话库共享**同一** 句柄——
+// 同进程同库，将来跨表事务（归档/清除这类）才有原子性。谁都能调，但只有打开方负责 Close。
+func (s *Store) DB() *sql.DB { return s.db }
 
 // Append 追加一条对话消息；与该会话上一条完全相同（role+content）时跳过——
 // 幂等保护（防重复交付）；代价是连续两条一模一样的消息会被合并。

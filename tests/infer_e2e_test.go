@@ -53,19 +53,31 @@ func startFakeDeepSeek(t *testing.T, toolFirst bool) *fakeDeepSeek {
 		var msg map[string]any
 		switch {
 		case toolFirst && call == 1:
+			// 第 1 轮并发派发两个工具：echo（链路跳转）与 memory__remember
+			//（后者验证 memory 的 provides 自动变成 LLM 工具、reasoner 零改动）。
 			msg = map[string]any{
 				"role": "assistant",
-				"tool_calls": []any{map[string]any{
-					"id":   "call_e2e",
-					"type": "function",
-					"function": map[string]any{
-						"name":      "reasoner__echo",
-						"arguments": `{"msg":"e2e"}`,
+				"tool_calls": []any{
+					map[string]any{
+						"id":   "call_e2e",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "reasoner__echo",
+							"arguments": `{"msg":"e2e"}`,
+						},
 					},
-				}},
+					map[string]any{
+						"id":   "call_remember",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "memory__remember",
+							"arguments": `{"kind":"偏好","content":"主人喜欢喝美式咖啡，不加糖"}`,
+						},
+					},
+				},
 			}
 		case toolFirst && call == 2:
-			// 异步工具：第 2 轮调 wait，阻塞到 echo 结果入账。
+			// 异步工具：第 2 轮调 wait，阻塞到两个工具的结果都入账。
 			msg = map[string]any{
 				"role": "assistant",
 				"tool_calls": []any{map[string]any{
@@ -216,8 +228,8 @@ func (b *e2eBoss) register(t *testing.T, centerURL string) *protocol.Client {
 }
 
 // TestInferChainE2E 真进程版全链（完全启动）：user_message → 记忆往返（recall → resume）
-// → 工具派发（异步受理回执）→ 自跳 → wait 等到结果 → 收尾轮 → deliver；
-// 并以预置会话历史验证记忆注入。
+// → 工具派发（异步受理回执：echo + memory__remember）→ 自跳 → wait 等到结果 → 收尾轮 → deliver；
+// 以预置会话历史验证记忆注入，并以第二轮对话验证长期记忆召回（remember 写入的条目被注入）。
 func TestInferChainE2E(t *testing.T) {
 	scBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/settings-center")
 	alBin := buildService(t, "github.com/QAQ-awa-QAQ/sump/reasoner")
@@ -344,6 +356,20 @@ func TestInferChainE2E(t *testing.T) {
 	}
 	reqs := fakeLLM.Requests()
 
+	// 工具列表：memory 的 remember（provides 声明）自动变成 LLM 工具——reasoner 零改动。
+	tools1, _ := reqs[0]["tools"].([]any)
+	foundRememberTool := false
+	for _, tl := range tools1 {
+		tm, _ := tl.(map[string]any)
+		fn, _ := tm["function"].(map[string]any)
+		if fn["name"] == "memory__remember" {
+			foundRememberTool = true
+		}
+	}
+	if !foundRememberTool {
+		t.Fatalf("工具列表应含 memory__remember（provides 自动暴露）: %+v", tools1)
+	}
+
 	// 第一轮请求：记忆块（预置会话历史）已被注入。
 	msgs1, _ := reqs[0]["messages"].([]any)
 	foundMemory := false
@@ -357,33 +383,88 @@ func TestInferChainE2E(t *testing.T) {
 		t.Fatalf("第一轮 LLM 请求应含注入的会话历史: %+v", msgs1)
 	}
 
-	// 第二轮请求：echo 已受理——回执（tool 消息）占住 tool_calls 的配对位。
+	// 第二轮请求：两个调用都已受理——回执（tool 消息）占住 tool_calls 的配对位。
 	msgs2, _ := reqs[1]["messages"].([]any)
-	foundAck := false
+	foundAck, foundAckRemember := false, false
 	for _, m := range msgs2 {
 		mm, _ := m.(map[string]any)
 		if mm["role"] == "tool" {
-			if s, _ := mm["content"].(string); strings.Contains(s, "已受理") && strings.Contains(s, "call_e2e") {
+			s, _ := mm["content"].(string)
+			if strings.Contains(s, "已受理") && strings.Contains(s, "call_e2e") {
 				foundAck = true
+			}
+			if strings.Contains(s, "已受理") && strings.Contains(s, "call_remember") {
+				foundAckRemember = true
 			}
 		}
 	}
-	if !foundAck {
-		t.Fatalf("第二次 LLM 请求应包含 echo 的受理回执: %+v", msgs2)
+	if !foundAck || !foundAckRemember {
+		t.Fatalf("第二次 LLM 请求应包含两个调用的受理回执: %+v", msgs2)
 	}
 
-	// 第三轮请求（wait 返回后）：echo 结果已作为 [工具结果] 注入。
+	// 第三轮请求（wait 返回后）：两个结果都已作为 [工具结果] 注入。
 	msgs3, _ := reqs[2]["messages"].([]any)
-	foundResult := false
+	foundResult, foundRememberResult := false, false
 	for _, m := range msgs3 {
 		mm, _ := m.(map[string]any)
 		if mm["role"] == "user" {
-			if s, _ := mm["content"].(string); strings.Contains(s, "[工具结果]") && strings.Contains(s, "e2e") {
+			s, _ := mm["content"].(string)
+			if strings.Contains(s, "[工具结果]") && strings.Contains(s, "e2e") && strings.Contains(s, "reasoner__echo") {
 				foundResult = true
+			}
+			if strings.Contains(s, "[工具结果]") && strings.Contains(s, "memory__remember") && strings.Contains(s, "created") {
+				foundRememberResult = true
 			}
 		}
 	}
-	if !foundResult {
-		t.Fatalf("第三次 LLM 请求应包含 [工具结果]: %+v", msgs3)
+	if !foundResult || !foundRememberResult {
+		t.Fatalf("第三次 LLM 请求应包含两个 [工具结果]: %+v", msgs3)
+	}
+
+	// ---------- 第二轮对话：长期记忆召回（remember 的条目应被注入） ----------
+	raw2, err := protocol.EncodePayload(map[string]any{"text": "给我推荐点美式咖啡吧", "conversation_id": "e2e-conv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req2, err := protocol.NewEnvelope(protocol.TypeJump, "e2e", "reasoner", "", protocol.JumpPayload{Action: "user_message", Input: raw2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req2.Boss = "e2e-boss"
+	resp2, err := ac.Call(ctx, req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ack2 protocol.ResponsePayload
+	if err := resp2.DecodePayload(&ack2); err != nil {
+		t.Fatal(err)
+	}
+	if !ack2.OK {
+		t.Fatalf("第二轮 user_message 未被受理: %s", ack2.Error)
+	}
+	select {
+	case text := <-boss.delivered:
+		if text != "E2E 最终答复" {
+			t.Fatalf("第二轮交付文本不符: %q", text)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("超时：boss 未收到第二轮 deliver")
+	}
+
+	// 第二轮的第一轮请求（总第 4 次）：记忆块应含「相关记忆」与 remember 写入的内容。
+	if fakeLLM.Calls() != 4 {
+		t.Fatalf("假 DeepSeek 调用次数 = %d, want 4", fakeLLM.Calls())
+	}
+	reqs = fakeLLM.Requests()
+	msgs4, _ := reqs[3]["messages"].([]any)
+	foundRelevant := false
+	for _, m := range msgs4 {
+		mm, _ := m.(map[string]any)
+		if s, _ := mm["content"].(string); strings.Contains(s, "（相关记忆）") && strings.Contains(s, "美式咖啡") {
+			foundRelevant = true
+		}
+	}
+	if !foundRelevant {
+		t.Fatalf("第二轮请求应含长期记忆召回（相关记忆节）: %+v", msgs4)
 	}
 }

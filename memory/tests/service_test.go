@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/QAQ-awa-QAQ/sump/memory/compose"
+	"github.com/QAQ-awa-QAQ/sump/memory/longterm"
 	"github.com/QAQ-awa-QAQ/sump/memory/server"
 	"github.com/QAQ-awa-QAQ/sump/memory/store"
 	"github.com/QAQ-awa-QAQ/sump/protocol"
@@ -289,6 +290,10 @@ func startMemory(t *testing.T, centerURL string, historyLimit int) *server.Serve
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	lt, err := longterm.Open(st.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
 	logger := log.New(os.Stdout, "[memory-test] ", log.LstdFlags)
 	srv := server.New(server.Config{
 		Name:              "memory",
@@ -296,6 +301,7 @@ func startMemory(t *testing.T, centerURL string, historyLimit int) *server.Serve
 		Center:            centerURL,
 		HeartbeatInterval: 200 * time.Millisecond,
 		Store:             st,
+		Longterm:          lt,
 		HistoryLimit:      historyLimit,
 	}, logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -428,4 +434,97 @@ func TestRecallDedupAndReplace(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("超时：未收到第二次 resume")
 	}
+}
+
+// TestRememberRecallInjection 验证长期记忆 v0 全链：
+// remember 写入（幂等）→ recall 组装带「核心记忆」（priority>0，不看相关性）与「相关记忆」（bigram 命中）；
+// forget 软删后不再出现；忘记不存在的 id 报错。
+func TestRememberRecallInjection(t *testing.T) {
+	sc := startStubCenter(t)
+	srv := startMemory(t, sc.URL(), 12)
+	caller := startStubCaller(t, sc.URL())
+
+	// 写入核心条目（身份）与普通条目（偏好）。
+	rp := caller.call(t, srv.WsURL(), "remember", protocol.RememberPayload{Kind: "身份", Content: "猫叫团子", Priority: 1})
+	if !rp.OK {
+		t.Fatalf("remember 失败: %s", rp.Error)
+	}
+	var rr protocol.RememberResult
+	if err := protocol.DecodeRaw(rp.Data, &rr); err != nil || rr.ID <= 0 || !rr.Created {
+		t.Fatalf("remember 结果不符: %+v err=%v", rr, err)
+	}
+	// 幂等：重复写入跳过。
+	rp = caller.call(t, srv.WsURL(), "remember", protocol.RememberPayload{Kind: "身份", Content: "猫叫团子", Priority: 1})
+	var rr2 protocol.RememberResult
+	if err := protocol.DecodeRaw(rp.Data, &rr2); err != nil || rr2.Created || rr2.ID != rr.ID {
+		t.Fatalf("remember 幂等不符: %+v err=%v", rr2, err)
+	}
+	if rp := caller.call(t, srv.WsURL(), "remember", protocol.RememberPayload{Kind: "偏好", Content: "主人喜欢喝美式咖啡，不加糖"}); !rp.OK {
+		t.Fatalf("remember 失败: %s", rp.Error)
+	}
+
+	// recall：查询“我明天想喝咖啡”——核心必须带（不看相关性），相关命中“咖啡”（2 字词）。
+	task := protocol.RecallPayload{Context: protocol.TaskContext{
+		ConversationID: "t3",
+		Boss:           "stub-boss",
+		Messages: []protocol.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "我明天想喝咖啡"},
+		},
+	}}
+	if rp := caller.recallUntilReady(t, srv.WsURL(), task); !rp.OK {
+		t.Fatalf("recall 失败: %s", rp.Error)
+	}
+	var first protocol.TaskContext
+	select {
+	case r := <-caller.resumes:
+		first = r.tc
+	case <-time.After(5 * time.Second):
+		t.Fatal("超时：未收到 resume")
+	}
+	block := memoryBlockText(first.Messages)
+	for _, want := range []string{"（核心记忆）", "猫叫团子", "（相关记忆）", "美式咖啡"} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("记忆块缺少 %q: %q", want, block)
+		}
+	}
+
+	// forget 核心条目 → 再 recall 不再出现。
+	if rp := caller.call(t, srv.WsURL(), "forget", protocol.ForgetPayload{ID: rr.ID}); !rp.OK {
+		t.Fatalf("forget 失败: %s", rp.Error)
+	}
+	task2 := protocol.RecallPayload{Context: protocol.TaskContext{
+		ConversationID: "t3",
+		Boss:           "stub-boss",
+		Messages: []protocol.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "今天写点什么代码"},
+		},
+	}}
+	if rp := caller.recallUntilReady(t, srv.WsURL(), task2); !rp.OK {
+		t.Fatalf("recall 失败: %s", rp.Error)
+	}
+	select {
+	case r := <-caller.resumes:
+		if strings.Contains(memoryBlockText(r.tc.Messages), "团子") {
+			t.Fatalf("forget 后不应再注入核心条目: %q", memoryBlockText(r.tc.Messages))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("超时：未收到第二次 resume")
+	}
+
+	// 忘记不存在的 id → 报错。
+	if rp := caller.call(t, srv.WsURL(), "forget", protocol.ForgetPayload{ID: 99999}); rp.OK {
+		t.Fatal("forget 不存在的 id 应报错")
+	}
+}
+
+// memoryBlockText 返回消息链里记忆块的文本（无则空串）。
+func memoryBlockText(messages []protocol.Message) string {
+	for _, m := range messages {
+		if m.Role == "system" && strings.HasPrefix(m.Content, compose.MemoryPrefix) {
+			return m.Content
+		}
+	}
+	return ""
 }

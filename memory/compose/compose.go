@@ -68,6 +68,27 @@ func BuildText(history []protocol.Message) string {
 	return strings.TrimSpace(b.String())
 }
 
+// EntryLine 是一条记忆条目的展示行（核心 / 相关节共用）。
+func EntryLine(kind, content string) string {
+	return "- [" + kind + "] " + content
+}
+
+// BuildMemory 组装 v0 记忆文本：最近对话 + 核心记忆 + 相关记忆（空节省略）。
+// 核心 = priority>0 的条目（不看相关性）；相关 = bigram 打分命中的条目。
+func BuildMemory(history []protocol.Message, core, relevant []string) string {
+	var sections []string
+	if text := BuildText(history); text != "" {
+		sections = append(sections, "（最近对话）\n"+text)
+	}
+	if len(core) > 0 {
+		sections = append(sections, "（核心记忆）\n"+strings.Join(core, "\n"))
+	}
+	if len(relevant) > 0 {
+		sections = append(sections, "（相关记忆）\n"+strings.Join(relevant, "\n"))
+	}
+	return strings.Join(sections, "\n\n")
+}
+
 // Inject 将记忆文本注入消息链：替换已有记忆块（保持原位置），否则插到第一条 system 之后；
 // memoryText 为空时移除旧块（本链视为无记忆）。
 func Inject(messages []protocol.Message, memoryText string) []protocol.Message {

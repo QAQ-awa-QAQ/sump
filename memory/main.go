@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/QAQ-awa-QAQ/sump/memory/longterm"
 	"github.com/QAQ-awa-QAQ/sump/memory/server"
 	"github.com/QAQ-awa-QAQ/sump/memory/store"
 )
@@ -30,11 +31,18 @@ func main() {
 	}
 	defer st.Close()
 
+	// 长期记忆与会话库共享同一句柄（同进程同库：跨表事务才成立）。
+	lt, err := longterm.Open(st.DB())
+	if err != nil {
+		logger.Fatalf("初始化长期记忆失败: %v", err)
+	}
+
 	s := server.New(server.Config{
 		Name:         *name,
 		Listen:       *addr,
 		Center:       *center,
 		Store:        st,
+		Longterm:     lt,
 		HistoryLimit: *history,
 	}, logger)
 	if err := s.Start(context.Background()); err != nil {
