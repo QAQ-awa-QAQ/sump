@@ -58,7 +58,7 @@ func TestLiveDeepSeek(t *testing.T) {
 
 	c := dialAgent(t, s)
 	raw, err := protocol.EncodePayload(map[string]any{
-		"text": "请先调用 reasoner__echo 工具（参数为 {\"msg\": \"ping-live\"}），然后用一句话告诉我工具返回了什么。",
+		"text": "请先调用 stub-center__ping 工具，然后用一句话告诉我工具返回了什么。",
 	})
 	if err != nil {
 		t.Fatal(err)

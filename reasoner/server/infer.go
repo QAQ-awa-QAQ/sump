@@ -26,7 +26,8 @@ const systemPrompt = `你是 SUMP 服务网络中的“单步推理器”（reas
 2. 当任务可以收尾、或用户问候闲聊时，直接输出最终答复文本。
 工具由系统代你执行，结果会以 tool 消息追加到对话中再交给你继续。`
 
-// structuralActions 是协议/链机制动作：不作为工具暴露给 LLM。
+// structuralActions 是不作为工具暴露给 LLM 的动作：协议/链机制动作（模型不得绕过链路），
+// 以及本服务的调试/测试动作（echo / debug_jump——不给模型“万能遥控”）。
 var structuralActions = map[string]bool{
 	"user_message": true,
 	"step":         true,
@@ -36,6 +37,8 @@ var structuralActions = map[string]bool{
 	"resume":       true, // 本服务的“完全启动”入口（仅接受 from=memory）
 	"save":         true, // images 服务：保存图片（qq 侧调用）
 	"fetch":        true, // images 服务：取图（llm 侧按需调用）
+	"echo":         true, // 本服务：连通性测试（仅供直连调试）
+	"debug_jump":   true, // 本服务：调试代理跳转
 }
 
 // rosterTools 把名册里各服务的 provides 映射为 LLM 工具。

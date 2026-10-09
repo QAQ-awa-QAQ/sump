@@ -163,14 +163,23 @@ func TestInferChain(t *testing.T) {
 		t.Fatalf("Fake LLM 调用次数 = %d, want 2", fake.CallCount())
 	}
 	first := fake.Requests[0]
-	foundEchoTool := false
+	// 名册动作映射为工具：跨服务动作在列表中；调试动作（echo / debug_jump）不暴露。
+	var hasPing, hasEcho, hasDebug bool
 	for _, tool := range first.Tools {
-		if tool.Function.Name == "reasoner__echo" {
-			foundEchoTool = true
+		switch tool.Function.Name {
+		case "stub-center__ping":
+			hasPing = true
+		case "reasoner__echo":
+			hasEcho = true
+		case "reasoner__debug_jump":
+			hasDebug = true
 		}
 	}
-	if !foundEchoTool {
-		t.Fatalf("第一轮请求应包含 reasoner__echo 工具: %+v", first.Tools)
+	if !hasPing {
+		t.Fatalf("第一轮请求应包含 stub-center__ping 工具: %+v", first.Tools)
+	}
+	if hasEcho || hasDebug {
+		t.Fatalf("调试动作不应暴露为工具: %+v", first.Tools)
 	}
 	// 完全启动链：请求必须携带记忆块（由 resume 注入）。
 	if !hasMemoryBlock(first.Messages) {
