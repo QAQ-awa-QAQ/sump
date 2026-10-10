@@ -1,5 +1,8 @@
 # SUMP v2
 
+[![CI](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml/badge.svg)](https://github.com/QAQ-awa-QAQ/sump/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
 > 状态：M6 完成（长期记忆 v0：remember / forget + bigram 召回 + 核心注入） · 设计文档：[DESIGN.md](./DESIGN.md)
 
 SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独立运行（独立进程、独立数据库、任意语言），通过 WebSocket 按地址互相访问；智能体循环由 LLM 服务在服务网络之上自由跳转、组装。
@@ -57,3 +60,4 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 | ---- | ---- |
 | [DESIGN.md](./DESIGN.md) | 重构设计：背景 / 架构 / 目录约定 / 实施路线 / 待决问题 |
 | [SPEC.md](./SPEC.md) | 服务规范（草案）：写一个新服务要满足什么（独立性 / 最小实现 / 动作词汇 / 工具暴露 / 兼容规则 / 待定事项） |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | 参与开发指南：环境 / 测试 / 提交规范 / 三条硬规则 |

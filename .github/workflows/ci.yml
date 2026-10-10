@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache: true
+
+      - name: gofmt 检查
+        run: |
+          out=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$out" ]; then
+            echo "以下文件需要 gofmt："
+            echo "$out"
+            exit 1
+          fi
+
+      - name: 各模块测试
+        run: |
+          for m in protocol service settings-center reasoner memory images qq; do
+            echo "== 模块: $m =="
+            (cd "$m" && go test ./... -count=1 -timeout 300s)
+          done
+
+      - name: 端到端测试（真进程）
+        run: |
+          cd tests
+          go test ./... -count=1 -timeout 600s
+
+      - name: 脱离工作区构建（GOWORK=off）
+        run: |
+          for m in protocol service settings-center reasoner memory images qq tests; do
+            echo "== $m =="
+            (cd "$m" && GOWORK=off go build ./...)
+          done

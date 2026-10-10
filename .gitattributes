@@ -1,0 +1,11 @@
+# 文本文件一律 LF：避免 Windows 检出 CRLF 触发 gofmt 误报、保证 CI 与本地一致。
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.db binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.exe binary
