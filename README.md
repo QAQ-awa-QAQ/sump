@@ -52,6 +52,7 @@ SUMP v2 是一个“服务的互联网”式的智能体系统。每个服务独
 - [x] 服务骨架库 `service/` 与离线判定：断线自愈（重连 + 重注册 + 注册去重）、优雅下线（bye）、中心心跳超时摘除与复归
 - [x] 异步工具模型（M5）：派发即回执 / `[工具结果]` 注入 / `wait` / 收尾门禁 / 任务窗口黑板；工具结果通知模式 `tool.notify_mode`（each 默认 / batch；设置中心覆盖 + 启动拉取）
 - [x] 长期记忆 v0（M6）：`remember`（provides → 自动成为 LLM 工具）/ `forget` 软删；bigram 召回（1~2 字中文可命中）+ 核心注入（priority）；recall 组装三节（最近对话 / 核心 / 相关）
+- [x] 工具暴露显式声明（`provides` 里 `tool: true`）+ 设置下发（`configure`）：中心 set/reset 后推送生效值，reasoner 实时应用（启动拉取兜底）
 - [ ] 下一步：embedding 语义召回 / 巩固线（sleep 提炼）、群聊（@ 必回 / 自主插话）、审批链路
 
 ## 文档

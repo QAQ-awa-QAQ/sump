@@ -164,7 +164,10 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 
 - 生效值 = **覆盖值 ?? 声明默认值**；覆盖值落盘于设置中心（`data/settings.json`）。
 - 校验：服务必须已注册、设置项必须已被该服务声明，否则报错。
-- 【待定】设置的下发（`configure`）与服务侧实时应用；目前 reasoner 采用**启动时拉取一次**（`tool.notify_mode`）。
+- **下发（已实现）**：中心在 `set_setting` / `reset_setting` 成功后，把变更项的生效值以 `configure` 跳转
+  推送给所属服务（载荷 `{key, value, default, overridden}`；尽力送达、失败仅记日志、不阻塞响应）。
+  服务侧实时应用（如 reasoner 的 `tool.notify_mode` 立即生效）；**启动拉取保留为兜底**
+  （推送丢失 / 服务离线期间变更）——两者幂等，重复应用无副作用。
 
 ---
 
@@ -208,7 +211,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 | 1 | LLM 工具暴露规则 | **已实现**：`provides` 里 `tool: true` 显式声明才暴露 + 保留/调试动作硬排除（第二道闸） | — |
 | 2 | 离线判定 | **已实现**：2× 心跳超时 + 扫描摘除 + 告别立即摘除 + 心跳复归 | — |
 | 3 | 连接自愈 | **已实现**（`service/` 骨架）：指数退避重连 + 重新注册 + 注册去重 | — |
-| 4 | 设置下发 | 中心可存取；reasoner 已支持**启动拉取**（`tool.notify_mode`） | `configure` 事件 + 服务侧运行时应用 |
+| 4 | 设置下发 | **已实现**：set/reset 成功后推送 `configure`（尽力送达）；reasoner 实时应用 `tool.notify_mode`（启动拉取为兜底） | 更多设置项接入；服务侧通用接收框架 |
 | 5 | 连接时长自适应 | 全短连接（注释已标注） | 热保留 / 冷回落，参数可配置 |
 | 6 | 审批链路 | 占名未实现 | `approval_request` / `approval_result` |
 | 7 | 服务骨架复用 | **已实现**：`service/` 薄骨架库（注册/心跳/名册/自愈/告别），四服务共用 | — |

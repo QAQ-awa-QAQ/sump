@@ -184,6 +184,15 @@ type ResetSettingPayload struct {
 	Key     string `msgpack:"key"`
 }
 
+// ConfigurePayload 是 configure 的输入：设置中心在 set_setting / reset_setting 成功后，
+// 把变更的**生效值**推送给所属服务（尽力送达；服务侧仍应保留启动拉取作兜底）。
+type ConfigurePayload struct {
+	Key        string `msgpack:"key"`
+	Value      string `msgpack:"value"`      // 生效值 = 覆盖值 ?? 声明默认值
+	Default    string `msgpack:"default"`    // 服务声明的默认值
+	Overridden bool   `msgpack:"overridden"` // 是否处于覆盖状态
+}
+
 // ---------- 长期记忆（memory） ----------
 
 // RememberPayload 是 remember 的 payload：写入一条长期记忆条目。

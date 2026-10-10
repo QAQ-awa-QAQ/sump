@@ -173,6 +173,48 @@ func TestNotifyModeBatch(t *testing.T) {
 	}
 }
 
+// TestConfigureLive：设置中心下发 configure（tool.notify_mode=batch）立即生效——
+// 不需要重启，后续工具结果按攒批唤醒（结果成对出现，不会单独唤醒某一条）。
+func TestConfigureLive(t *testing.T) {
+	fake := &llm.Fake{Replies: []llm.Message{
+		{Role: "assistant", ToolCalls: []llm.ToolCall{
+			{ID: "call_0", Type: "function", Function: llm.FunctionCall{Name: "slow__work", Arguments: "{}"}},
+			{ID: "call_1", Type: "function", Function: llm.FunctionCall{Name: "slow__work", Arguments: "{}"}},
+		}},
+		{Role: "assistant", Content: "configure 生效"},
+	}}
+	s, boss := startAsyncEnv(t, startStubCenter(t), fake, "each")
+
+	// 模拟设置中心推送：tool.notify_mode = batch。
+	c := dialAgent(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rp := jump(t, c, "configure", protocol.ConfigurePayload{Key: "tool.notify_mode", Value: "batch", Default: "each", Overridden: true}, ctx)
+	if !rp.OK {
+		t.Fatalf("configure 未被受理: %s", rp.Error)
+	}
+
+	sendUser(t, s, "跑两个慢任务")
+
+	select {
+	case d := <-boss.delivered:
+		if d.Text != "configure 生效" {
+			t.Fatalf("交付文本不符: %q", d.Text)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("超时：boss 未收到 deliver")
+	}
+
+	for i, req := range fake.Requests {
+		if hasToolResult(req, "call_0") != hasToolResult(req, "call_1") {
+			t.Fatalf("configure 下发的 batch 未生效（第 %d 轮请求）: %+v", i+1, req.Messages)
+		}
+	}
+	if !hasToolResult(*fake.LastRequest(), "call_0") || !hasToolResult(*fake.LastRequest(), "call_1") {
+		t.Fatalf("最后一轮请求应含两条 [工具结果]: %+v", fake.LastRequest().Messages)
+	}
+}
+
 // TestNotifyModeFromSettings：设置中心的覆盖值（tool.notify_mode=batch）在启动时拉取生效，
 // 覆盖本地默认（each）——效果与 batch 模式一致：结果只成对出现。
 func TestNotifyModeFromSettings(t *testing.T) {

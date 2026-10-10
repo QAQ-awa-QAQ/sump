@@ -44,6 +44,7 @@ var structuralActions = map[string]bool{
 	"fetch":        true, // images 服务：取图（llm 侧按需调用）
 	"echo":         true, // 本服务：连通性测试（仅供直连调试）
 	"debug_jump":   true, // 本服务：调试代理跳转
+	"configure":    true, // 本服务：设置中心下发的设置变更（链机制外，中心驱动）
 }
 
 // rosterTools 把名册里各服务**显式声明 tool:true** 的动作映射为 LLM 工具

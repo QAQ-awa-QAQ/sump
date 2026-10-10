@@ -8,6 +8,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -86,6 +87,7 @@ func New(cfg Config, logger *log.Logger) *Server {
 	})
 	s.Handle("echo", s.actionEcho)
 	s.Handle("debug_jump", s.actionDebugJump)
+	s.Handle("configure", s.actionConfigure)
 	s.Handle("user_message", s.actionUserMessage)
 	s.Handle("step", s.actionStep)
 	s.Handle("resume", s.actionResume)
@@ -127,6 +129,26 @@ func (s *Server) pullSettings(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// actionConfigure 承接设置中心下发的设置变更（configure）：立即生效（不等重启）。
+// 推送是尽力送达，启动时的 pullSettings 是兜底——两者幂等，重复应用无副作用。
+func (s *Server) actionConfigure(_ context.Context, _ protocol.Envelope, in protocol.JumpPayload) (any, error) {
+	var p protocol.ConfigurePayload
+	if err := protocol.DecodeRaw(in.Input, &p); err != nil {
+		return nil, err
+	}
+	switch p.Key {
+	case "tool.notify_mode":
+		if p.Value != "each" && p.Value != "batch" {
+			return nil, fmt.Errorf("configure: tool.notify_mode 不接受值 %q（可选 each / batch）", p.Value)
+		}
+		s.setNotifyMode(p.Value)
+		s.logger.Printf("设置生效（下发）: tool.notify_mode=%s", p.Value)
+	default:
+		s.logger.Printf("configure: 未支持的设置键 %q（忽略）", p.Key)
+	}
+	return map[string]any{"status": "applied"}, nil
 }
 
 // toolTimeout 返回单个工具调用的执行超时（默认 60s）。

@@ -2,6 +2,7 @@
 package server
 
 import (
+	"context"
 	"log"
 	"net"
 	"net/http"
@@ -115,7 +116,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("升级失败: %v", err)
 		return
 	}
-	sc := &serverConn{ws: ws, hub: s.hub, settings: s.settings, logger: s.logger}
+	sc := &serverConn{ws: ws, hub: s.hub, settings: s.settings, srv: s, logger: s.logger}
 	go sc.serve()
 }
 
@@ -124,6 +125,7 @@ type serverConn struct {
 	ws       *websocket.Conn
 	hub      *hub.Hub
 	settings *hub.Settings
+	srv      *Server // 回指（configure 推送等）
 	logger   *log.Logger
 
 	mu     sync.Mutex // 写锁（gorilla 不支持并发写）
@@ -272,7 +274,7 @@ func (c *serverConn) handleListSettings(env protocol.Envelope, jp protocol.JumpP
 	c.replyData(env, protocol.SettingsResult{Services: c.settings.List(p.Service)})
 }
 
-// handleSetSetting 写覆盖值（服务与设置项都必须已被声明）。
+// handleSetSetting 写覆盖值（服务与设置项都必须已被声明）；成功后向所属服务推送 configure。
 func (c *serverConn) handleSetSetting(env protocol.Envelope, jp protocol.JumpPayload) {
 	var p protocol.SetSettingPayload
 	if err := protocol.DecodeRaw(jp.Input, &p); err != nil {
@@ -285,6 +287,7 @@ func (c *serverConn) handleSetSetting(env protocol.Envelope, jp protocol.JumpPay
 		return
 	}
 	c.logger.Printf("设置变更: %s.%s = %q", p.Service, p.Key, p.Value)
+	c.srv.pushConfigure(p.Service, ss, p.Key)
 	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
 }
 
@@ -301,7 +304,54 @@ func (c *serverConn) handleResetSetting(env protocol.Envelope, jp protocol.JumpP
 		return
 	}
 	c.logger.Printf("设置重置: %s.%s → 默认值", p.Service, p.Key)
+	c.srv.pushConfigure(p.Service, ss, p.Key)
 	c.replyData(env, protocol.SettingsResult{Services: []protocol.ServiceSettings{ss}})
+}
+
+// pushConfigure 把某个设置项的变更生效值以 configure 跳转推送给所属服务。
+// 尽力送达：失败仅记日志（服务侧仍保留“启动拉取”作兜底）。异步进行，不阻塞响应。
+func (s *Server) pushConfigure(service string, ss protocol.ServiceSettings, key string) {
+	var item protocol.SettingView
+	found := false
+	for _, v := range ss.Settings {
+		if v.Key == key {
+			item, found = v, true
+			break
+		}
+	}
+	if !found {
+		return
+	}
+	card, ok := s.hub.Lookup(service)
+	if !ok {
+		s.logger.Printf("configure 未推送：服务 %s 不在名册（可能已离线）", service)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		c, err := protocol.DialContext(ctx, card.Addr, nil)
+		if err != nil {
+			s.logger.Printf("configure 推送 %s 失败（拨号）: %v", service, err)
+			return
+		}
+		defer c.Close()
+		raw, err := protocol.EncodePayload(protocol.ConfigurePayload{
+			Key: item.Key, Value: item.Value, Default: item.Default, Overridden: item.Overridden,
+		})
+		if err != nil {
+			return
+		}
+		env, err := protocol.NewEnvelope(protocol.TypeJump, "settings-center", service, "", protocol.JumpPayload{Action: "configure", Input: raw})
+		if err != nil {
+			return
+		}
+		if _, err := c.Call(ctx, env); err != nil {
+			s.logger.Printf("configure 推送 %s 失败: %v", service, err)
+			return
+		}
+		s.logger.Printf("configure 已推送: %s.%s = %q", service, item.Key, item.Value)
+	}()
 }
 
 // replyData 构造并发送一个成功响应（data 为任意可编码值）。

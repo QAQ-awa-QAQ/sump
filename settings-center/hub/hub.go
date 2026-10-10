@@ -59,6 +59,14 @@ func (h *Hub) Register(card protocol.ServiceCard, conn Conn) (protocol.RosterPay
 	return h.snapshotLocked(), changed
 }
 
+// Lookup 按服务名取名片（不在名册返回 false）。
+func (h *Hub) Lookup(name string) (protocol.ServiceCard, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	card, ok := h.cards[name]
+	return card, ok
+}
+
 // PutSelf 把设置中心自身作为一张名片放进名册（无连接、仅信息），
 // 使各服务可以访问设置中心（如 jump ping）。静态名片不参与离线扫描。
 func (h *Hub) PutSelf(card protocol.ServiceCard) {
