@@ -168,8 +168,9 @@ func TestInferChain(t *testing.T) {
 		t.Fatalf("Fake LLM 调用次数 = %d, want 3", fake.CallCount())
 	}
 	first := fake.Requests[0]
-	// 名册动作映射为工具：跨服务动作在列表中；调试动作（echo / debug_jump）不暴露；内置 wait 恒在。
-	var hasPing, hasWait, hasEcho, hasDebug bool
+	// 名册动作映射为工具：显式声明 tool:true 的跨服务动作在列表中；未声明的动作、
+	// 调试动作（echo / debug_jump）不暴露；内置 wait 恒在。
+	var hasPing, hasWait, hasEcho, hasDebug, hasHidden bool
 	for _, tool := range first.Tools {
 		switch tool.Function.Name {
 		case "stub-center__ping":
@@ -180,6 +181,8 @@ func TestInferChain(t *testing.T) {
 			hasEcho = true
 		case "reasoner__debug_jump":
 			hasDebug = true
+		case "stub-center__hidden_no_tool":
+			hasHidden = true
 		}
 	}
 	if !hasPing {
@@ -188,8 +191,8 @@ func TestInferChain(t *testing.T) {
 	if !hasWait {
 		t.Fatalf("工具列表应包含内置 wait: %+v", first.Tools)
 	}
-	if hasEcho || hasDebug {
-		t.Fatalf("调试动作不应暴露为工具: %+v", first.Tools)
+	if hasEcho || hasDebug || hasHidden {
+		t.Fatalf("未声明 tool / 调试动作不应暴露为工具: %+v", first.Tools)
 	}
 	// 完全启动链：请求必须携带记忆块（由 resume 注入）。
 	if !hasMemoryBlock(first.Messages) {

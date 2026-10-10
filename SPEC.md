@@ -106,13 +106,17 @@ SUMP 是“服务的互联网”：每个服务是一个独立进程、独立数
 
 在服务内唯一即可（`to` 已指明服务，不需要全局前缀）。命名：小写 + 下划线。
 
-### 6.3 工具名映射
+### 6.3 工具名映射与暴露规则
 
 LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides` 生成）。
 
-> 【待定】暴露规则：现状是“非保留动作即暴露 + reasoner 硬编码排除几个调试动作”。
-> 倾向改为 **provides 显式声明才暴露**（如 `tool: true`）——第三方服务的动作无法被
-> reasoner 的硬编码表覆盖，必须由服务自己声明。详见 §11。
+**暴露 = 显式声明（已实现）**：动作要在 `provides` 里声明 **`tool: true`** 才暴露给 LLM；
+未声明的动作只可被“直接跳转”访问，对模型不可见。另有两道硬闸（即便声明也不暴露）：
+
+1. 链机制保留动作（§6.1 的 `user_message` / `step` / `deliver` / `recall` / `resume` / `store` / `save` / `fetch`）；
+2. 调试 / 测试动作（如 reasoner 的 `echo` / `debug_jump`）。
+
+> 为什么必须显式声明：第三方服务的动作无法被 reasoner 的硬编码表覆盖，必须由服务自己表态。
 
 **工具并发**：同一会话内的工具调用并发执行；reasoner 侧默认单会话上限 10（可配置，-1 = 不限制），超限排队。同一服务的多个调用可并发重复进行，不做去重。
 
@@ -138,7 +142,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
   "name": "images",
   "addr": "ws://127.0.0.1:9401/ws",
   "description": "图片服务：保存图片（URL/base64），按需转 base64 发回调用方",
-  "provides": [                                  // 我对外提供哪些动作
+  "provides": [                                  // 我对外提供哪些动作（"tool": true 才作为 LLM 工具暴露）
     { "action": "save",  "input": "{url} 或 {data(base64), mime}", "output": "{id, mime, size}" },
     { "action": "fetch", "input": "{id}", "output": "{id, mime, data(base64), size}" }
   ],
@@ -201,7 +205,7 @@ LLM 工具名 = **`<service>__<action>`**（由 reasoner 依据名册 `provides`
 
 | # | 事项 | 现状 | 倾向 |
 | - | ---- | ---- | ---- |
-| 1 | LLM 工具暴露规则 | 保留动作硬编码排除 + reasoner 排除 `echo`/`debug_jump` | **provides 显式声明才暴露**（第三方服务必须能自己声明） |
+| 1 | LLM 工具暴露规则 | **已实现**：`provides` 里 `tool: true` 显式声明才暴露 + 保留/调试动作硬排除（第二道闸） | — |
 | 2 | 离线判定 | **已实现**：2× 心跳超时 + 扫描摘除 + 告别立即摘除 + 心跳复归 | — |
 | 3 | 连接自愈 | **已实现**（`service/` 骨架）：指数退避重连 + 重新注册 + 注册去重 | — |
 | 4 | 设置下发 | 中心可存取；reasoner 已支持**启动拉取**（`tool.notify_mode`） | `configure` 事件 + 服务侧运行时应用 |

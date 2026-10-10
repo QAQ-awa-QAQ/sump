@@ -65,7 +65,10 @@ func startStubCenter(t *testing.T) *stubCenter {
 		Name:        "stub-center",
 		Addr:        sc.URL(),
 		Description: "设置中心测试替身",
-		Provides:    []protocol.Provide{{Action: "ping", Output: "pong"}},
+		Provides: []protocol.Provide{
+			{Action: "ping", Tool: true, Output: "pong"},
+			{Action: "hidden_no_tool", Output: "未声明 tool,不应暴露"},
+		},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", sc.handleWS)

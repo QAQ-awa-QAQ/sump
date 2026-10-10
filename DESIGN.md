@@ -222,7 +222,7 @@ sequenceDiagram
 - `user_message`（链入口）：payload `{text, conversation_id, images}`；**发起者必须设 `boss`**；受理后立即回执，最终结果稍后经 `deliver` 送达
 - `step`（自跳继续）：payload `{conversation_id}`——上下文在黑板里（任务窗口）；**发出即完**（不等待）
 - `deliver`（约定动作，**由 boss 实现**）：payload `{text}`；链终点判定结束直送 boss（交付方同步等回执）
-- **工具命名**：`<service>__<action>`——由 roster 的 `provides` 自动生成；`user_message` / `step` / `deliver` / `recall` / `resume` / `store` 属链机制动作，不暴露为工具；调试动作（如 reasoner 的 `echo` / `debug_jump`）同样不暴露
+- **工具命名**：`<service>__<action>`——由 roster 的 `provides` 自动生成；**暴露 = provides 里显式声明 `tool: true`**（未声明的动作对模型不可见）；`user_message` / `step` / `deliver` / `recall` / `resume` / `store` / `save` / `fetch` 属链机制动作，调试动作（如 reasoner 的 `echo` / `debug_jump`）同样不暴露（第二道闸）
 - **工具异步模型（已实现）**：
   - 派发即回执：每个调用立刻回一条“已受理”`tool` 消息（占住配对位），执行在后台（单次超时默认 60s）；
   - 结果注入：完成后以 `[工具结果] …`（role=user）写入黑板；通知模式 `tool.notify_mode`（`each` 默认逐条唤醒 / `batch` 攒批），设置中心可覆盖（启动拉取）；

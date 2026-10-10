@@ -356,18 +356,32 @@ func TestInferChainE2E(t *testing.T) {
 	}
 	reqs := fakeLLM.Requests()
 
-	// 工具列表：memory 的 remember（provides 声明）自动变成 LLM 工具——reasoner 零改动。
+	// 工具列表（显式声明制）：memory 的 remember（provides 里 tool:true）自动变成 LLM 工具——reasoner 零改动；
+	// 未声明的动作（settings-center 的 ping/roster、qq/boss 的 deliver、链机制动作）一律不暴露。
 	tools1, _ := reqs[0]["tools"].([]any)
-	foundRememberTool := false
+	toolNames := map[string]bool{}
 	for _, tl := range tools1 {
 		tm, _ := tl.(map[string]any)
 		fn, _ := tm["function"].(map[string]any)
-		if fn["name"] == "memory__remember" {
-			foundRememberTool = true
+		if name, ok := fn["name"].(string); ok {
+			toolNames[name] = true
 		}
 	}
-	if !foundRememberTool {
-		t.Fatalf("工具列表应含 memory__remember（provides 自动暴露）: %+v", tools1)
+	if !toolNames["memory__remember"] {
+		t.Fatalf("工具列表应含 memory__remember（显式声明自动暴露）: %+v", tools1)
+	}
+	if !toolNames["wait"] {
+		t.Fatalf("工具列表应含内置 wait: %+v", tools1)
+	}
+	for _, forbidden := range []string{
+		"settings-center__ping", "settings-center__roster", // 未声明 tool
+		"memory__recall", "memory__store", // 链机制动作（即便声明也不暴露）
+		"reasoner__echo", "reasoner__debug_jump", // 调试动作
+		"e2e-boss__deliver", // 链终点动作
+	} {
+		if toolNames[forbidden] {
+			t.Fatalf("不应暴露的工具 %s 出现在列表: %+v", forbidden, tools1)
+		}
 	}
 
 	// 第一轮请求：记忆块（预置会话历史）已被注入。

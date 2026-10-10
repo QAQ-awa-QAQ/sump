@@ -7,6 +7,9 @@ type Provide struct {
 	Action string `msgpack:"action"`
 	Input  string `msgpack:"input,omitempty"`
 	Output string `msgpack:"output,omitempty"`
+	// Tool 显式声明该动作是否作为 LLM 工具暴露给模型（默认 false）。
+	// 工具名 = <service>__<action>；链机制保留动作与调试动作即便声明也不暴露（第二道闸）。
+	Tool bool `msgpack:"tool,omitempty"`
 }
 
 // Setting 是服务的一个可设置项。

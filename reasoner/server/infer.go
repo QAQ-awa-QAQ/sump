@@ -30,8 +30,9 @@ const systemPrompt = `你是 SUMP 服务网络中的“单步推理器”（reas
 - 可以并行调用多个工具；也可以调用 wait 工具等待全部工具完成，或先继续做其他事；
 - 仍有工具任务未完成时不要收尾——若提前输出最终答复，系统会拒绝并要求你继续等待。`
 
-// structuralActions 是不作为工具暴露给 LLM 的动作：协议/链机制动作（模型不得绕过链路），
+// structuralActions 是即便声明 tool:true 也不作为工具暴露的动作：协议/链机制动作（模型不得绕过链路），
 // 以及本服务的调试/测试动作（echo / debug_jump——不给模型“万能遥控”）。
+// 第一道闸是 provides 里显式声明 tool:true；这里是第二道闸（防御性）。
 var structuralActions = map[string]bool{
 	"user_message": true,
 	"step":         true,
@@ -45,12 +46,13 @@ var structuralActions = map[string]bool{
 	"debug_jump":   true, // 本服务：调试代理跳转
 }
 
-// rosterTools 把名册里各服务的 provides 映射为 LLM 工具。
+// rosterTools 把名册里各服务**显式声明 tool:true** 的动作映射为 LLM 工具
+// （未声明的不暴露；链机制/调试动作再由 structuralActions 第二道闸拦下）。
 func (s *Server) rosterTools() []llm.Tool {
 	var out []llm.Tool
 	for _, card := range s.Roster() {
 		for _, p := range card.Provides {
-			if structuralActions[p.Action] {
+			if !p.Tool || structuralActions[p.Action] {
 				continue
 			}
 			out = append(out, llm.Tool{

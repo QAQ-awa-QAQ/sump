@@ -44,7 +44,7 @@ func startStubSlow(t *testing.T, center *stubCenter) *stubSlow {
 	center.mu.Lock()
 	center.cards["slow"] = protocol.ServiceCard{
 		Name: "slow", Addr: s.URL(), Description: "慢工具测试替身",
-		Provides: []protocol.Provide{{Action: "work", Output: "ok"}},
+		Provides: []protocol.Provide{{Action: "work", Tool: true, Output: "ok"}},
 	}
 	center.mu.Unlock()
 	return s
